@@ -1,0 +1,16 @@
+# Global settings. Per-strategy settings live in config/strategies/*.yaml.
+
+defaults:
+  mode: paper            # backtest | paper | shadow | live — live also requires --live on the CLI
+
+risk:
+  # Hard global limits, enforced on top of per-strategy limits.
+  max_total_live_capital: "0"      # Decimal string. 0 = live trading disabled globally.
+  daily_drawdown_halt_pct: "5"     # halt a strategy after losing this % of its allocation in a day
+  kill_switch_file: "KILL_SWITCH"  # if this file exists in repo root, no orders are sent
+
+state:
+  db_path: "state/goldilocks.db"
+
+data:
+  cache_dir: "data/cache"

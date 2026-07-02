@@ -24,3 +24,9 @@ build/
 
 # OS
 .DS_Store
+
+# Goldilocks runtime artifacts
+state/          # engine state store (SQLite), never commit
+logs/
+data/cache/     # downloaded market data
+KILL_SWITCH     # presence of this file halts all live trading

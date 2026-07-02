@@ -1,0 +1,19 @@
+# Deployment config for one strategy instance. The engine enforces everything here;
+# the strategy code never sees its own capital limits.
+
+strategy: ema_cross            # registry name (see @register in the strategy file)
+asset_class: forex
+mode: paper                    # backtest | paper | shadow | live
+enabled: true
+
+capital:
+  allocation: "1000"           # Decimal string — max capital this instance may deploy
+  max_position_pct: "50"       # max % of allocation in a single position
+
+instruments:
+  - EUR_USD
+
+params:                        # passed to the Strategy constructor, strategy-specific
+  fast_period: 12
+  slow_period: 26
+  timeframe: M15
