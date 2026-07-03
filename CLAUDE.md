@@ -57,9 +57,27 @@ through this code — treat every change accordingly.
 - **Options (Alpaca):** multi-leg orders, chains, and greeks need their own data types;
   don't shoehorn them into the spot `Order` model when the time comes (see roadmap phase 5).
 
-## Current status
+## Current status — pick up here
 
-Scaffold only. Interfaces, config schema, CLI skeleton, and docs exist; the engine loop,
-connectors, and backtest replay are stubs raising `NotImplementedError`. Build order lives
-in `docs/ROADMAP.md` — consult it before starting work, and update it (status + decision
-log) when finishing a phase or making a design decision.
+Last session: 2026-07-02. Phase 0 (scaffold) is complete and pushed; nothing beyond it
+has started. Interfaces, config schema, CLI skeleton, example EMA-cross forex strategy,
+and smoke tests exist; the engine loop, connectors, and backtest replay are stubs raising
+`NotImplementedError`.
+
+**Next up: roadmap phase 1** — the forex backtest vertical slice. Concretely:
+1. OANDA historical-candles data adapter (`src/goldilocks/data/`, httpx, cache under
+   `data/cache/`) — needs OANDA practice keys in `.env` (free demo at oanda.com;
+   template in `.env.example`).
+2. Backtest engine MVP (`src/goldilocks/backtest/engine.py`) + shared `Portfolio`
+   accounting, fills at next bar open with spread applied.
+3. Metrics + trade list so `goldilocks backtest config/strategies/ema_cross_eurusd.yaml`
+   prints a P&L report.
+
+Environment note: this repo was scaffolded on Windows using the `py` launcher
+(Python 3.12). Setup on a fresh machine: `py -m venv .venv`, activate,
+`pip install -e ".[dev]"`, then `pytest` (2 tests should pass) and
+`goldilocks strategies` to verify.
+
+Build order lives in `docs/ROADMAP.md` — consult it before starting work, and update it
+(status + decision log) and this section when finishing a phase or making a design
+decision.
