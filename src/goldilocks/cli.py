@@ -25,6 +25,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p_backtest = sub.add_parser("backtest", help="backtest one deployment config")
     p_backtest.add_argument("config", help="path to a config/strategies/*.yaml file")
+    p_backtest.add_argument("--start", help="override backtest start date (YYYY-MM-DD)")
+    p_backtest.add_argument("--end", help="override backtest end date (YYYY-MM-DD)")
 
     p_run = sub.add_parser("run", help="start the engine for all enabled deployments")
     p_run.add_argument(
@@ -43,6 +45,30 @@ def main(argv: list[str] | None = None) -> int:
 
         for name, cls in sorted(STRATEGY_REGISTRY.items()):
             print(f"{name:24} {cls.asset_class.value:10} {cls.__module__}")
+        return 0
+
+    if args.command == "backtest":
+        from datetime import UTC, datetime
+        from pathlib import Path
+
+        from dotenv import load_dotenv
+
+        from goldilocks.backtest.runner import run_backtest
+
+        load_dotenv()
+
+        def parse(value: str | None) -> datetime | None:
+            if value is None:
+                return None
+            dt = datetime.fromisoformat(value)
+            return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+        try:
+            result = run_backtest(Path(args.config), start=parse(args.start), end=parse(args.end))
+        except (ValueError, RuntimeError) as exc:
+            print(f"backtest failed: {exc}", file=sys.stderr)
+            return 1
+        print(result.report())
         return 0
 
     print(f"goldilocks {args.command}: not implemented yet — see docs/ROADMAP.md", file=sys.stderr)

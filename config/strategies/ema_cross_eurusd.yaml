@@ -17,3 +17,8 @@ params:                        # passed to the Strategy constructor, strategy-sp
   fast_period: 12
   slow_period: 26
   timeframe: M15
+
+backtest:                      # used only by `goldilocks backtest`
+  start: 2026-01-01
+  end: 2026-07-01
+  spread: "0.00012"            # full bid/ask spread in price units (~1.2 pips EUR/USD)

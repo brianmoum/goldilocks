@@ -59,23 +59,24 @@ through this code — treat every change accordingly.
 
 ## Current status — pick up here
 
-Last session: 2026-07-02. Phase 0 (scaffold) is complete and pushed; nothing beyond it
-has started. Interfaces, config schema, CLI skeleton, example EMA-cross forex strategy,
-and smoke tests exist; the engine loop, connectors, and backtest replay are stubs raising
-`NotImplementedError`.
+Last session: 2026-07-03. **Phase 1 (forex backtest vertical slice) is complete.**
+`goldilocks backtest config/strategies/ema_cross_eurusd.yaml` runs the full pipeline:
+YAML config → strategy registry → `OandaDataFeed` (fetch + CSV cache under
+`data/cache/`) → `BacktestEngine` (fills at next bar open, spread applied, warmup
+respected) → shared `Portfolio` accounting → P&L report (return, max drawdown, win
+rate, profit factor, trade list). 20 tests pass; ruff clean. The OANDA adapter is
+tested against a mocked transport only — **no real-data run yet because there is no
+`.env` with an OANDA practice key** (free demo at oanda.com; template in
+`.env.example`). Deployment YAMLs gained a `backtest:` section (start, end, spread).
 
-**Next up: roadmap phase 1** — the forex backtest vertical slice. Concretely:
-1. OANDA historical-candles data adapter (`src/goldilocks/data/`, httpx, cache under
-   `data/cache/`) — needs OANDA practice keys in `.env` (free demo at oanda.com;
-   template in `.env.example`).
-2. Backtest engine MVP (`src/goldilocks/backtest/engine.py`) + shared `Portfolio`
-   accounting, fills at next bar open with spread applied.
-3. Metrics + trade list so `goldilocks backtest config/strategies/ema_cross_eurusd.yaml`
-   prints a P&L report.
+**Next up:** (a) put an OANDA practice key in `.env` and validate the backtest against
+real EUR/USD candles, then (b) roadmap phase 2 — the paper trading engine: OANDA
+connector (account, streaming, orders), async engine run loop, RiskManager enforcement
+(`check_order` is still a stub), SQLite state store, `goldilocks run/stop/status`.
 
-Environment note: this repo was scaffolded on Windows using the `py` launcher
-(Python 3.12). Setup on a fresh machine: `py -m venv .venv`, activate,
-`pip install -e ".[dev]"`, then `pytest` (2 tests should pass) and
+Environment note: originally scaffolded on Windows (`py` launcher, Python 3.12); now
+also developed on macOS (`python3 -m venv .venv`, Python 3.14). Both work. Setup on a
+fresh machine: create a venv, `pip install -e ".[dev]"`, then `pytest` and
 `goldilocks strategies` to verify.
 
 Build order lives in `docs/ROADMAP.md` — consult it before starting work, and update it

@@ -8,15 +8,17 @@ decision log as work lands.
 Project structure, core types, abstract interfaces (Strategy, BrokerConnector, DataFeed),
 strategy registry, config schema, CLI skeleton, safety conventions in CLAUDE.md.
 
-## Phase 1 — Forex vertical slice (backtest) 🔜 next
+## Phase 1 — Forex vertical slice (backtest) ✅ (2026-07-03)
 
 Goal: `goldilocks backtest config/strategies/ema_cross_eurusd.yaml` produces a P&L report.
 
-- [ ] OANDA data adapter: fetch + cache historical candles (practice API, httpx)
-- [ ] Backtest engine MVP: replay bars → strategy → signals → simulated fills → portfolio
-- [ ] Fill simulation v1: fill at next bar open, apply the bid/ask spread
-- [ ] Metrics: total return, max drawdown, win rate, profit factor, trade list
-- [ ] Validate the example EMA-cross strategy end to end
+- [x] OANDA data adapter: fetch + cache historical candles (practice API, httpx)
+- [x] Backtest engine MVP: replay bars → strategy → signals → simulated fills → portfolio
+- [x] Fill simulation v1: fill at next bar open, apply the bid/ask spread
+- [x] Metrics: total return, max drawdown, win rate, profit factor, trade list
+- [x] Validate the example EMA-cross strategy end to end — done on synthetic data
+      (17k bars, full CLI path); rerun against real OANDA candles once a practice
+      API key is in `.env`
 
 ## Phase 2 — Paper trading engine
 
@@ -88,3 +90,7 @@ Gate: no strategy goes live before completing this checklist.
 | 2026-07-02 | Own backtest engine, not vectorbt/backtrader | Backtest/live parity: one Strategy interface everywhere |
 | 2026-07-02 | Monitoring: CLI + TUI + web, all reading SQLite state store | One source of truth; monitor never queries brokers |
 | 2026-07-02 | Money as Decimal | Float rounding is unacceptable for balances/P&L |
+| 2026-07-03 | Data feed always hits the OANDA practice host | Candle history is identical on practice/live; backtests must never need live credentials |
+| 2026-07-03 | Mid-price candles + configurable spread applied at fill | One request per range instead of bid/ask pairs; spread lives in the deployment YAML (`backtest.spread`) so it's calibratable per instrument in phase 6 |
+| 2026-07-03 | Portfolio uses notional cash accounting (buy debits qty×price) | Simple and identical across backtest/live; margin modelling deferred |
+| 2026-07-03 | Data cache is CSV keyed by (instrument, timeframe, start, end) | Zero extra deps; swap for parquet if size becomes a problem |
