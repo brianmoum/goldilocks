@@ -24,6 +24,10 @@ Goal: `goldilocks backtest config/strategies/ema_cross_eurusd.yaml` produces a P
 
 Goal: the same strategy runs live against OANDA's practice account.
 
+- [ ] **Do this first (resolves W1):** extract position sizing + `RiskManager.check_order`
+      into one shared component; refactor `BacktestEngine` to route every order through
+      it; tests prove backtest and live paths produce identical orders from identical
+      signals. Only then build the paper engine on top.
 - [ ] OANDA connector: account snapshot, streaming prices, order submit/cancel, positions
 - [ ] Engine run loop: async event loop feeding bars to strategies, routing signals
 - [ ] RiskManager enforcement: per-strategy capital cap, max position size, daily
@@ -65,7 +69,9 @@ Gate: no strategy goes live before completing this checklist.
 
 - [ ] Shadow mode: live data, real signal generation, orders logged but NOT sent —
       compare shadow fills vs paper fills to calibrate slippage
-- [ ] Slippage/spread model in backtests calibrated from paper/shadow data
+- [ ] Slippage/spread model in backtests calibrated from paper/shadow data (resolves W2:
+      session-varying spread, slippage, swap/financing on overnight positions, weekend
+      gaps, and a margin/leverage model to replace notional-only accounting)
 - [ ] Reconnect + resume: engine survives network drops and machine reboots
       (Windows scheduled task or service wrapper)
 - [ ] Kill-switch drill: verify KILL_SWITCH halts everything within one tick
@@ -77,8 +83,61 @@ Gate: no strategy goes live before completing this checklist.
 
 - [ ] Capital reallocation between strategies (manual first, rules later)
 - [ ] Cross-strategy exposure limits (e.g. total USD exposure across all strategies)
-- [ ] Walk-forward validation tooling as the default backtest mode
+- [ ] Walk-forward validation tooling as the default backtest mode — **tripwire (W3):
+      this jumps the queue and must be built BEFORE the first parameter-tuning or
+      strategy-development session, regardless of which phase is in progress**
 - [ ] Strategy comparison reports
+
+## Known weaknesses — remediation plan
+
+Identified 2026-07-04 after phase 1. Each item names its trigger: the moment it must be
+fixed. Do not fix earlier (premature) or later (retrofit). Check items off here AND at
+their phase bullets when resolved.
+
+### W1 — Risk/sizing parity gap
+
+**What:** `BacktestEngine` does its own position sizing privately (`_size`) and never
+calls `RiskManager.check_order` (still a stub). The shared-code guarantee currently
+covers Strategy and Portfolio, but NOT sizing or risk limits.
+**Why it matters:** if the phase 2 live engine grows its own sizing/risk logic, backtest
+and live enforce different rules — the exact divergence invariants 2–3 exist to prevent.
+Every backtest would then validate behavior the live engine doesn't have.
+**Remediation:** first task of phase 2 (see the bullet there): one shared sizing+risk
+component, both engines route every order through it, parity proven by tests.
+**Trigger:** start of phase 2. Status: open.
+
+### W2 — Optimistic market model
+
+**What:** fills always succeed instantly at next bar open ± half a *fixed* spread.
+Missing: session-varying spreads (they widen ~10x at news/rollover), slippage, finite
+liquidity, swap/financing on overnight positions, weekend gaps, margin/leverage
+(accounting is notional-only). Open positions are marked at mid, understating exit cost.
+**Why it matters:** every backtest number is systematically inflated — an upper bound,
+not an estimate. A strategy that looks marginally profitable (e.g. profit factor 1.08)
+is likely a loser net of real costs.
+**Remediation:** deliberately deferred to phase 6 — the calibration data (real paper/
+shadow fills vs simulator predictions for the same moments) cannot exist before phase 2
+runs paper trading. Guessing numbers now would launder "ceiling" into "estimate".
+**Interim rule:** read all backtest results as best-case ceilings; no strategy decision
+may cite backtest P&L as an expected return.
+**Trigger:** phase 6 (needs paper/shadow fill data). Status: open.
+
+### W3 — No overfitting guard (walk-forward missing)
+
+**What:** nothing prevents tuning strategy parameters against one historical window and
+shipping the memorized result. CLAUDE.md's backtesting discipline requires walk-forward
+(train on one window, score on the next, roll) as the DEFAULT backtest mode; today it
+doesn't exist even as an option. Compounding it: the data cache is keyed by exact
+(start, end) so exploring windows re-downloads data, and the runner is limited to one
+instrument per config, blocking cross-instrument robustness checks.
+**Why it matters:** overfitting is the most likely way this project loses real money —
+a rigged-by-accident backtest graduates a memorized strategy into live trading.
+**Remediation:** walk-forward runner (split → tune → score out-of-sample → roll →
+aggregate out-of-sample-only report), cache range reuse, multi-instrument runs. Listed
+under phase 7 but NOT gated on it.
+**Trigger:** BEFORE the first parameter-tuning or strategy-development session — the
+work jumps the queue the day tuning starts. Until then, don't tune parameters against
+a single window and trust the result. Status: open.
 
 ## Decision log
 
@@ -95,3 +154,4 @@ Gate: no strategy goes live before completing this checklist.
 | 2026-07-03 | Portfolio uses notional cash accounting (buy debits qty×price) | Simple and identical across backtest/live; margin modelling deferred |
 | 2026-07-03 | Data cache is CSV keyed by (instrument, timeframe, start, end) | Zero extra deps; swap for parquet if size becomes a problem |
 | 2026-07-04 | Secrets injected per-run from Bitwarden via the `gl` shell function | No plaintext token on disk; `.env` stays supported (python-dotenv never overrides preset env vars) |
+| 2026-07-04 | Weaknesses tracked in this file (W1–W3) with explicit triggers, not an external tracker | Every session reads this file; tickets outside the repo drift and miss the moment of decision |

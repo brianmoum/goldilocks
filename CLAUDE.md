@@ -72,9 +72,12 @@ against real OANDA EUR/USD candles using a practice key pulled from Bitwarden by
 `gl` shell function (see invariant 6). Deployment YAMLs gained a `backtest:` section
 (start, end, spread).
 
-**Next up: roadmap phase 2** — the paper trading engine: OANDA connector (account,
-streaming, orders), async engine run loop, RiskManager enforcement (`check_order` is
-still a stub), SQLite state store, `goldilocks run/stop/status`.
+**Next up: roadmap phase 2** — the paper trading engine. First task is fixed (see
+"Known weaknesses" W1 in docs/ROADMAP.md): extract sizing + risk into one shared
+component both engines call. Then: OANDA connector (account, streaming, orders), async
+engine run loop, SQLite state store, `goldilocks run/stop/status`. Known weaknesses
+W1–W3 live in the roadmap with explicit remediation triggers — check them before
+starting any work.
 
 Environment note: originally scaffolded on Windows (`py` launcher, Python 3.12); now
 also developed on macOS (`python3 -m venv .venv`, Python 3.14). Both work. Setup on a
