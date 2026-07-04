@@ -19,8 +19,11 @@ through this code — treat every change accordingly.
    code path that can place a real order must check all three. Default mode everywhere is
    `paper`.
 5. **Money is `Decimal`, never `float`.** Prices, quantities, balances, P&L.
-6. **Secrets live in `.env` only.** Never in YAML config, never committed. `.env.example`
-   documents required keys.
+6. **Secrets arrive via environment variables only.** Never in YAML config, never
+   committed. `.env.example` documents required keys. Preferred injection: the `gl`
+   shell function (in `~/.zshrc`) pulls them from Bitwarden per invocation; a
+   gitignored `.env` (auto-loaded via python-dotenv, which never overrides already-set
+   env vars) also works.
 
 ## Conventions
 
@@ -64,15 +67,14 @@ Last session: 2026-07-03. **Phase 1 (forex backtest vertical slice) is complete.
 YAML config → strategy registry → `OandaDataFeed` (fetch + CSV cache under
 `data/cache/`) → `BacktestEngine` (fills at next bar open, spread applied, warmup
 respected) → shared `Portfolio` accounting → P&L report (return, max drawdown, win
-rate, profit factor, trade list). 20 tests pass; ruff clean. The OANDA adapter is
-tested against a mocked transport only — **no real-data run yet because there is no
-`.env` with an OANDA practice key** (free demo at oanda.com; template in
-`.env.example`). Deployment YAMLs gained a `backtest:` section (start, end, spread).
+rate, profit factor, trade list). 20 tests pass; ruff clean. Validated 2026-07-04
+against real OANDA EUR/USD candles using a practice key pulled from Bitwarden by the
+`gl` shell function (see invariant 6). Deployment YAMLs gained a `backtest:` section
+(start, end, spread).
 
-**Next up:** (a) put an OANDA practice key in `.env` and validate the backtest against
-real EUR/USD candles, then (b) roadmap phase 2 — the paper trading engine: OANDA
-connector (account, streaming, orders), async engine run loop, RiskManager enforcement
-(`check_order` is still a stub), SQLite state store, `goldilocks run/stop/status`.
+**Next up: roadmap phase 2** — the paper trading engine: OANDA connector (account,
+streaming, orders), async engine run loop, RiskManager enforcement (`check_order` is
+still a stub), SQLite state store, `goldilocks run/stop/status`.
 
 Environment note: originally scaffolded on Windows (`py` launcher, Python 3.12); now
 also developed on macOS (`python3 -m venv .venv`, Python 3.14). Both work. Setup on a

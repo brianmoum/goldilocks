@@ -16,9 +16,9 @@ Goal: `goldilocks backtest config/strategies/ema_cross_eurusd.yaml` produces a P
 - [x] Backtest engine MVP: replay bars → strategy → signals → simulated fills → portfolio
 - [x] Fill simulation v1: fill at next bar open, apply the bid/ask spread
 - [x] Metrics: total return, max drawdown, win rate, profit factor, trade list
-- [x] Validate the example EMA-cross strategy end to end — done on synthetic data
-      (17k bars, full CLI path); rerun against real OANDA candles once a practice
-      API key is in `.env`
+- [x] Validate the example EMA-cross strategy end to end — synthetic data (17k bars,
+      full CLI path) on 2026-07-03; real OANDA EUR/USD candles on 2026-07-04 via the
+      practice API
 
 ## Phase 2 — Paper trading engine
 
@@ -94,3 +94,4 @@ Gate: no strategy goes live before completing this checklist.
 | 2026-07-03 | Mid-price candles + configurable spread applied at fill | One request per range instead of bid/ask pairs; spread lives in the deployment YAML (`backtest.spread`) so it's calibratable per instrument in phase 6 |
 | 2026-07-03 | Portfolio uses notional cash accounting (buy debits qty×price) | Simple and identical across backtest/live; margin modelling deferred |
 | 2026-07-03 | Data cache is CSV keyed by (instrument, timeframe, start, end) | Zero extra deps; swap for parquet if size becomes a problem |
+| 2026-07-04 | Secrets injected per-run from Bitwarden via the `gl` shell function | No plaintext token on disk; `.env` stays supported (python-dotenv never overrides preset env vars) |
