@@ -24,10 +24,10 @@ Goal: `goldilocks backtest config/strategies/ema_cross_eurusd.yaml` produces a P
 
 Goal: the same strategy runs live against OANDA's practice account.
 
-- [ ] **Do this first (resolves W1):** extract position sizing + `RiskManager.check_order`
+- [x] **Do this first (resolves W1):** extract position sizing + `RiskManager.check_order`
       into one shared component; refactor `BacktestEngine` to route every order through
       it; tests prove backtest and live paths produce identical orders from identical
-      signals. Only then build the paper engine on top.
+      signals. Only then build the paper engine on top. *(done 2026-07-05)*
 - [ ] OANDA connector: account snapshot, streaming prices, order submit/cancel, positions
 - [ ] Engine run loop: async event loop feeding bars to strategies, routing signals
 - [ ] RiskManager enforcement: per-strategy capital cap, max position size, daily
@@ -104,7 +104,10 @@ and live enforce different rules — the exact divergence invariants 2–3 exist
 Every backtest would then validate behavior the live engine doesn't have.
 **Remediation:** first task of phase 2 (see the bullet there): one shared sizing+risk
 component, both engines route every order through it, parity proven by tests.
-**Trigger:** start of phase 2. Status: open.
+**Trigger:** start of phase 2. Status: **resolved 2026-07-05** — `RiskManager` in
+core/risk.py owns `size_signal` + `check_order` (kill switch, daily drawdown halt with
+UTC-day latch, position/allocation caps, reduce-only orders exempt from halt/caps);
+`BacktestEngine` routes every order through it; the phase 2 engine must do the same.
 
 ### W2 — Optimistic market model
 

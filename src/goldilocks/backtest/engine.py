@@ -11,14 +11,19 @@ Roadmap phase 1. Design constraints:
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 
 from goldilocks.core import Bar, Fill, Order, OrderSide, Position, Signal, TradingMode
 from goldilocks.core.portfolio import Portfolio, Trade
+from goldilocks.core.risk import RiskLimits, RiskManager
 from goldilocks.strategies.base import Strategy
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +31,9 @@ class BacktestConfig:
     allocation: Decimal              # capital the strategy may deploy
     max_position_pct: Decimal        # max % of allocation in one position
     spread: Decimal = Decimal(0)     # full bid/ask spread in price units (mid candles)
+    # 100 = a strategy must lose its whole allocation in one day to halt (i.e. off by
+    # default in backtests); paper/live get the real limit from config/settings.yaml.
+    daily_drawdown_halt_pct: Decimal = Decimal(100)
 
 
 @dataclass(slots=True)
@@ -101,6 +109,17 @@ class BacktestEngine:
         self.strategy = strategy
         self.config = config
         self.portfolio = Portfolio(initial_cash=config.allocation)
+        # W1: sizing and risk live in the ONE shared component (core/risk.py), so the
+        # rules a backtest validates are the rules the live engine enforces.
+        self.risk = RiskManager(
+            RiskLimits(
+                allocation=config.allocation,
+                max_position_pct=config.max_position_pct,
+                daily_drawdown_halt_pct=config.daily_drawdown_halt_pct,
+            ),
+            kill_switch_file=Path("KILL_SWITCH"),
+        )
+        self.rejected_orders = 0
 
     def run(self, bars: list[Bar]) -> BacktestResult:
         if not bars:
@@ -119,9 +138,9 @@ class BacktestEngine:
             if i >= warmup:
                 pending = signals
 
-            equity_curve.append(
-                (bar.timestamp, self.portfolio.equity({bar.instrument: bar.close}))
-            )
+            equity = self.portfolio.equity({bar.instrument: bar.close})
+            self.risk.record_equity(bar.timestamp, equity)
+            equity_curve.append((bar.timestamp, equity))
 
         final_equity = equity_curve[-1][1]
         instrument = bars[0].instrument
@@ -150,7 +169,7 @@ class BacktestEngine:
             if signal.side is OrderSide.BUY
             else bar.open - half_spread
         )
-        quantity = self._size(signal, price)
+        quantity = self.risk.size_signal(signal, self.portfolio, price)
         if quantity <= 0:
             return
         order = Order(
@@ -162,6 +181,11 @@ class BacktestEngine:
             mode=TradingMode.BACKTEST,
             created_at=bar.timestamp,
         )
+        verdict = self.risk.check_order(order, self.portfolio, price)
+        if not verdict.approved:
+            self.rejected_orders += 1
+            logger.warning("order rejected: %s (%s)", verdict.reason, order)
+            return
         fill = Fill(
             order_id=order.order_id,
             instrument=order.instrument,
@@ -172,20 +196,6 @@ class BacktestEngine:
         )
         self.portfolio.apply_fill(fill)
         self.strategy.on_fill(fill)
-
-    def _size(self, signal: Signal, price: Decimal) -> Decimal:
-        pos = self.portfolio.position(signal.instrument)
-        if signal.exit:
-            return abs(pos.quantity) if pos else Decimal(0)
-        # Sizing mirrors what the live engine will do: strength scales the per-position
-        # cap; never add to an existing same-direction position (v1).
-        if pos is not None:
-            same_direction = (pos.quantity > 0) == (signal.side is OrderSide.BUY)
-            if same_direction:
-                return Decimal(0)
-        max_notional = self.config.allocation * self.config.max_position_pct / 100
-        # Forex quantities are whole base-currency units.
-        return Decimal(int(max_notional * signal.strength / price))
 
 
 def _max_drawdown_pct(equity_curve: list[tuple[datetime, Decimal]]) -> Decimal:
