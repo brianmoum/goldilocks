@@ -62,22 +62,21 @@ through this code — treat every change accordingly.
 
 ## Current status — pick up here
 
-Last session: 2026-07-03. **Phase 1 (forex backtest vertical slice) is complete.**
-`goldilocks backtest config/strategies/ema_cross_eurusd.yaml` runs the full pipeline:
-YAML config → strategy registry → `OandaDataFeed` (fetch + CSV cache under
-`data/cache/`) → `BacktestEngine` (fills at next bar open, spread applied, warmup
-respected) → shared `Portfolio` accounting → P&L report (return, max drawdown, win
-rate, profit factor, trade list). 20 tests pass; ruff clean. Validated 2026-07-04
-against real OANDA EUR/USD candles using a practice key pulled from Bitwarden by the
-`gl` shell function (see invariant 6). Deployment YAMLs gained a `backtest:` section
-(start, end, spread).
+Last session: 2026-07-05. **Phase 1 complete; phase 2 built, pending real-account
+validation.** The paper trading engine exists end to end: shared `RiskManager`
+(sizing + order gate, W1 resolved), `OandaConnector` (market orders, candle-polling
+bar stream, strict practice/live credential isolation), async `Engine` (warmup feed,
+signal→order→fill loop, SHADOW logging, LIVE triple gate + global capital cap, crash
+recovery reconcile), SQLite state store (WAL; the monitor's only data source), and
+`goldilocks run/stop/status` (PID file + SIGTERM). 53 tests pass; ruff clean. The
+backtest path was refactored onto the same RiskManager and config loader — behavior
+unchanged.
 
-**Next up: roadmap phase 2** — the paper trading engine. First task is fixed (see
-"Known weaknesses" W1 in docs/ROADMAP.md): extract sizing + risk into one shared
-component both engines call. Then: OANDA connector (account, streaming, orders), async
-engine run loop, SQLite state store, `goldilocks run/stop/status`. Known weaknesses
-W1–W3 live in the roadmap with explicit remediation triggers — check them before
-starting any work.
+**Next up:** the last phase 2 checkbox — validate against the real OANDA practice
+account: `gl run` with the ema_cross paper deployment over several M15 bar closes;
+check fills arrive, `goldilocks status` reads correctly, stop/restart reconciles, and
+do a KILL_SWITCH drill. Then phase 3 (monitoring TUI/web). W2–W3 remain open in
+docs/ROADMAP.md with their triggers.
 
 Environment note: originally scaffolded on Windows (`py` launcher, Python 3.12); now
 also developed on macOS (`python3 -m venv .venv`, Python 3.14). Both work. Setup on a

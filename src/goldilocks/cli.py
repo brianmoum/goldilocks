@@ -71,8 +71,109 @@ def main(argv: list[str] | None = None) -> int:
         print(result.report())
         return 0
 
+    if args.command == "run":
+        return _cmd_run(live=args.live)
+    if args.command == "status":
+        return _cmd_status()
+    if args.command == "stop":
+        return _cmd_stop()
+
     print(f"goldilocks {args.command}: not implemented yet — see docs/ROADMAP.md", file=sys.stderr)
     return 1
+
+
+_PID_FILE = "state/engine.pid"
+
+
+def _cmd_run(live: bool) -> int:
+    import asyncio
+    import logging
+    import os
+    import signal
+    from pathlib import Path
+
+    from dotenv import load_dotenv
+
+    from goldilocks.config import load_all_deployments, load_settings
+    from goldilocks.core.engine import Engine
+
+    load_dotenv()
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+    )
+    settings = load_settings()
+    try:
+        deployments = load_all_deployments(Path("config/strategies"))
+        engine = Engine(settings, deployments, live=live)
+    except (ValueError, RuntimeError) as exc:
+        print(f"cannot start engine: {exc}", file=sys.stderr)
+        return 1
+
+    pid_file = Path(_PID_FILE)
+    if pid_file.exists():
+        print(f"{pid_file} exists — is the engine already running? "
+              f"(goldilocks stop, or delete the file if stale)", file=sys.stderr)
+        return 1
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(str(os.getpid()))
+
+    async def main() -> None:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, engine.stop)
+        await engine.run()
+
+    try:
+        asyncio.run(main())
+    finally:
+        pid_file.unlink(missing_ok=True)
+    return 0
+
+
+def _cmd_stop() -> int:
+    import os
+    import signal
+    from pathlib import Path
+
+    pid_file = Path(_PID_FILE)
+    if not pid_file.exists():
+        print("engine is not running (no PID file)", file=sys.stderr)
+        return 1
+    pid = int(pid_file.read_text().strip())
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        print(f"stale PID file (process {pid} not found) — removing", file=sys.stderr)
+        pid_file.unlink()
+        return 1
+    print(f"sent SIGTERM to engine (pid {pid})")
+    return 0
+
+
+def _cmd_status() -> int:
+    from goldilocks.config import load_settings
+    from goldilocks.store import StateStore
+
+    settings = load_settings()
+    if not settings.db_path.exists():
+        print("no state store yet — nothing has run")
+        return 0
+    rows = StateStore(settings.db_path).status_rows()
+    if not rows:
+        print("no deployments recorded")
+        return 0
+    header = (f"{'strategy':<20} {'mode':<7} {'alloc':>10} {'exposure':>10} "
+              f"{'equity':>10} {'realized':>10} {'W/L':>7}  state")
+    print(header)
+    print("-" * len(header))
+    for r in rows:
+        equity = f"{r.equity:.2f}" if r.equity is not None else "-"
+        print(
+            f"{r.strategy_name:<20} {r.mode:<7} {r.allocation:>10.2f} "
+            f"{r.exposure:>10.2f} {equity:>10} {r.realized_pnl:>+10.2f} "
+            f"{r.wins:>3}/{r.losses:<3}  {'stopped' if r.stopped else 'running'}"
+        )
+    return 0
 
 
 if __name__ == "__main__":

@@ -28,14 +28,25 @@ Goal: the same strategy runs live against OANDA's practice account.
       into one shared component; refactor `BacktestEngine` to route every order through
       it; tests prove backtest and live paths produce identical orders from identical
       signals. Only then build the paper engine on top. *(done 2026-07-05)*
-- [ ] OANDA connector: account snapshot, streaming prices, order submit/cancel, positions
-- [ ] Engine run loop: async event loop feeding bars to strategies, routing signals
-- [ ] RiskManager enforcement: per-strategy capital cap, max position size, daily
-      drawdown halt, KILL_SWITCH file check before every order
-- [ ] SQLite state store: deployments, orders, fills, equity curve per strategy
-- [ ] `goldilocks run` / `goldilocks stop` / `goldilocks status` (table: strategy, mode,
-      allocated capital, current exposure, open P&L, realized P&L, win/loss record)
-- [ ] Crash recovery: on restart, reconcile state store against broker positions
+- [x] OANDA connector: account snapshot, market orders (FOK, fills parsed from the
+      response), positions; bars via completed-candle polling (tick streaming can
+      replace it later without engine changes) *(2026-07-05)*
+- [x] Engine run loop: async loop feeding bars to strategies, routing signals through
+      the shared RiskManager; SHADOW logs instead of submitting; LIVE triple gate +
+      `max_total_live_capital` global cap enforced in the engine *(2026-07-05)*
+- [x] RiskManager enforcement: per-strategy capital cap, max position size, daily
+      drawdown halt (UTC-day latch), KILL_SWITCH file check before every order
+      *(2026-07-05, W1)*
+- [x] SQLite state store (WAL): deployments, orders, fills, trades, positions, equity
+      per strategy *(2026-07-05)*
+- [x] `goldilocks run` / `goldilocks stop` / `goldilocks status` (PID file + SIGTERM;
+      status reads ONLY the state store) *(2026-07-05)*
+- [x] Crash recovery: on restart, reconcile state store against broker positions —
+      mismatches logged, broker adopted as truth, portfolio seeded at broker avg entry
+      *(2026-07-05; v1 assumes one strategy per instrument per account)*
+- [ ] Validate against the real practice account: `gl run` with the ema_cross paper
+      deployment across several M15 bar closes; confirm fills, `goldilocks status`,
+      stop/restart reconcile, and a KILL_SWITCH drill
 
 ## Phase 3 — Monitoring (TUI + web)
 

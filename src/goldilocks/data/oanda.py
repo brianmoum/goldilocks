@@ -53,16 +53,20 @@ class OandaDataFeed(DataFeed):
         api_token: str | None = None,
         cache_dir: Path = Path("data/cache"),
         client: httpx.Client | None = None,
+        use_cache: bool = True,
     ) -> None:
         self._api_token = api_token
         self.cache_dir = cache_dir
         self._client = client
+        self.use_cache = use_cache
 
     def get_bars(
         self, instrument: str, timeframe: str, start: datetime, end: datetime
     ) -> list[Bar]:
         if timeframe not in _GRANULARITY_SECONDS:
             raise ValueError(f"unknown OANDA granularity: {timeframe!r}")
+        if not self.use_cache:
+            return self._fetch(instrument, timeframe, start, end)
         cache_file = self._cache_path(instrument, timeframe, start, end)
         if cache_file.exists():
             return self._read_cache(cache_file, instrument, timeframe)

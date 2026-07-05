@@ -2,7 +2,8 @@
 
 This is what `goldilocks backtest config/strategies/*.yaml` calls. The deployment YAML
 gains a `backtest:` section (start/end dates, spread); everything else — strategy,
-params, capital limits — is the same config that will drive paper/live in phase 2.
+params, capital limits — is the same config that drives paper/live, parsed by the same
+loader (goldilocks.config), so a config can never mean different things per mode.
 """
 
 from __future__ import annotations
@@ -11,9 +12,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
-import yaml
-
 from goldilocks.backtest.engine import BacktestConfig, BacktestEngine, BacktestResult
+from goldilocks.config import load_deployment, load_settings
 from goldilocks.data.oanda import OandaDataFeed
 from goldilocks.strategies import STRATEGY_REGISTRY
 
@@ -37,22 +37,17 @@ def run_backtest(
     start: datetime | None = None,
     end: datetime | None = None,
 ) -> BacktestResult:
-    config = yaml.safe_load(config_path.read_text())
+    dep = load_deployment(config_path)
+    settings = load_settings()
 
-    strategy_name = config["strategy"]
-    if strategy_name not in STRATEGY_REGISTRY:
+    if dep.strategy not in STRATEGY_REGISTRY:
         raise ValueError(
-            f"unknown strategy {strategy_name!r} — run `goldilocks strategies` to list"
+            f"unknown strategy {dep.strategy!r} — run `goldilocks strategies` to list"
         )
-    instruments = config.get("instruments") or []
-    if len(instruments) != 1:
+    if len(dep.instruments) != 1:
         raise ValueError("backtest v1 supports exactly one instrument per config")
-    instrument = instruments[0]
 
-    params = config.get("params") or {}
-    timeframe = params.get("timeframe", "M15")
-    capital = config.get("capital") or {}
-    bt = config.get("backtest") or {}
+    bt = dep.backtest
     if start is None:
         if "start" not in bt:
             raise ValueError(f"add a backtest.start date to {config_path} or pass --start")
@@ -62,18 +57,19 @@ def run_backtest(
     )
 
     engine = BacktestEngine(
-        strategy=STRATEGY_REGISTRY[strategy_name](params),
+        strategy=STRATEGY_REGISTRY[dep.strategy](dep.params),
         config=BacktestConfig(
-            allocation=Decimal(str(capital.get("allocation", "1000"))),
-            max_position_pct=Decimal(str(capital.get("max_position_pct", "100"))),
+            allocation=dep.allocation,
+            max_position_pct=dep.max_position_pct,
             spread=Decimal(str(bt.get("spread", "0"))),
         ),
     )
 
-    feed = OandaDataFeed()
-    bars = feed.get_bars(instrument, timeframe, start, end)
+    feed = OandaDataFeed(cache_dir=settings.cache_dir)
+    bars = feed.get_bars(dep.instruments[0], dep.timeframe, start, end)
     if not bars:
         raise ValueError(
-            f"no bars returned for {instrument} {timeframe} {start:%Y-%m-%d}..{end:%Y-%m-%d}"
+            f"no bars returned for {dep.instruments[0]} {dep.timeframe} "
+            f"{start:%Y-%m-%d}..{end:%Y-%m-%d}"
         )
     return engine.run(bars)
