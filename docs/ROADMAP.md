@@ -153,6 +153,49 @@ under phase 7 but NOT gated on it.
 work jumps the queue the day tuning starts. Until then, don't tune parameters against
 a single window and trust the result. Status: open.
 
+### W4 — No resilience to transient failures (engine stops on any network blip)
+
+**What:** the engine's loop guard treats every exception as fatal and stops the whole
+engine. The bar stream polls OANDA every 5s; over a multi-week paper run a timeout or
+5xx is a certainty. Result: engine down until a human notices, with no alerting (phase
+3). Related: an outage longer than ~3 bars lost candles silently (poll fetched only
+the last 3), gapping strategy indicator state.
+**Why it matters:** a paper engine that silently stops is not rehearsing live trading;
+uptime is the whole game.
+**Remediation:** transient I/O errors (transport errors, 429, 5xx) retried inside the
+connector with exponential backoff and never crash the engine; auth/config errors
+(4xx) stay fatal; poll size scales with time-since-last-bar so outages backfill missed
+candles. Order submission is deliberately NOT retried — a duplicate order is worse
+than a dropped one; the failure is logged and recorded in the store.
+**Trigger:** before relying on any multi-day paper run. Status: **resolved 2026-07-05**
+(connector-level retry/backoff + gap backfill; alerting still lands in phase 3).
+
+### W5 — Risk-critical state does not survive restarts
+
+**What:** the daily drawdown halt latch and day-start equity live only in RiskManager
+memory, and the reconciled portfolio resets equity to the full allocation. Restarting
+the engine (crash or `goldilocks stop/run`) un-halts a halted strategy and erases the
+day's loss from risk math — "turn it off and on again" bypasses the circuit breaker.
+**Why it matters:** the halt exists precisely for the moments when something is broken;
+those are also the moments restarts happen.
+**Remediation:** on startup, rebuild each strategy's day-start equity and halt state
+from the state store (equity table already has the history); persist halt events
+explicitly. **Trigger:** before trusting the drawdown halt at all — i.e. early phase 3,
+alongside the alerting hooks that make halts visible. Status: open.
+
+### W6 — Shadow mode does not simulate fills
+
+**What:** shadow orders are logged but never filled, so the shadow portfolio never
+holds a position: exit signals size to zero and are dropped (never logged), and entry
+signals repeat instead of being suppressed. The shadow order log is NOT "what live
+would have submitted".
+**Why it matters:** phase 6 calibrates the backtest cost model by comparing shadow
+fills to paper fills, and graduation decisions lean on shadow evidence — both need
+shadow to be faithful.
+**Remediation:** shadow deployments keep a virtual portfolio filled at the current
+price (same simulator as backtest fills), suppressing only the broker submission.
+**Trigger:** before shadow output is used for anything (phase 6 gate). Status: open.
+
 ## Decision log
 
 | Date | Decision | Why |

@@ -18,8 +18,17 @@ def make_connector(handler, mode=TradingMode.PAPER, **kwargs) -> OandaConnector:
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     return OandaConnector(
         mode, api_token="t", account_id="101-001-1-001", client=client,
-        poll_interval=0, **kwargs,
+        poll_interval=0, retry_backoff=0, **kwargs,
     )
+
+
+def make_candle(ts: datetime, complete: bool = True, price: str = "1.1") -> dict:
+    return {
+        "time": ts.strftime("%Y-%m-%dT%H:%M:%S.000000000Z"),
+        "complete": complete,
+        "volume": 10,
+        "mid": {"o": price, "h": price, "l": price, "c": price},
+    }
 
 
 def make_order(qty="400", side=OrderSide.BUY, mode=TradingMode.PAPER) -> Order:
@@ -132,6 +141,79 @@ def test_get_positions_nets_long_short():
     assert positions[0].instrument == "EUR_USD"
     assert positions[0].quantity == Decimal(400)
     assert positions[0].avg_entry_price == Decimal("1.0850")
+
+
+def test_stream_bars_survives_transient_errors():
+    """W4: transport errors and 5xx are retried inside the connector; the engine
+    never sees them and the bar still arrives."""
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:  # priming poll
+            return httpx.Response(200, json={"candles": [make_candle(T0)]})
+        if calls == 2:
+            raise httpx.ConnectError("network down")
+        if calls == 3:
+            return httpx.Response(503, json={})
+        return httpx.Response(
+            200,
+            json={"candles": [make_candle(T0), make_candle(T0 + timedelta(minutes=15))]},
+        )
+
+    async def run():
+        stream = make_connector(handler).stream_bars(["EUR_USD"], "M15")
+        return await asyncio.wait_for(anext(stream), timeout=2)
+
+    bar = asyncio.run(run())
+    assert bar.timestamp == T0 + timedelta(minutes=15)
+    assert calls == 4  # prime, transport error, 503, success
+
+
+def test_stream_bars_auth_error_is_fatal():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"errorMessage": "bad token"})
+
+    async def run():
+        stream = make_connector(handler).stream_bars(["EUR_USD"], "M15")
+        await asyncio.wait_for(anext(stream), timeout=2)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(run())
+
+
+def test_stream_bars_backfills_gap_after_outage():
+    """W4: the poll size scales with time since the last seen bar, so candles that
+    completed during an outage are recovered, oldest first."""
+    now = datetime.now(tz=UTC).replace(second=0, microsecond=0)
+    old = now - timedelta(minutes=15 * 20)  # last seen bar is 20 bars stale
+    counts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        counts.append(int(request.url.params["count"]))
+        if len(counts) == 1:  # priming poll returns only the stale candle
+            return httpx.Response(200, json={"candles": [make_candle(old)]})
+        return httpx.Response(
+            200,
+            json={"candles": [
+                make_candle(old),
+                make_candle(old + timedelta(minutes=15)),
+                make_candle(old + timedelta(minutes=30)),
+            ]},
+        )
+
+    async def run():
+        stream = make_connector(handler).stream_bars(["EUR_USD"], "M15")
+        first = await asyncio.wait_for(anext(stream), timeout=2)
+        second = await asyncio.wait_for(anext(stream), timeout=2)
+        return first, second
+
+    first, second = asyncio.run(run())
+    assert counts[0] == 3            # nothing known yet: default poll size
+    assert counts[1] >= 20           # cursor is 20 bars stale: ask for the whole gap
+    assert first.timestamp == old + timedelta(minutes=15)   # oldest first
+    assert second.timestamp == old + timedelta(minutes=30)
 
 
 def test_stream_bars_primes_then_yields_only_new():

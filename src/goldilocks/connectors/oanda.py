@@ -15,6 +15,7 @@ Quantities are base-currency units, signed for direction, whole numbers.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -26,6 +27,8 @@ from goldilocks.connectors.base import BrokerConnector
 from goldilocks.core import AssetClass, Bar, Fill, Order, OrderSide, Position, TradingMode
 from goldilocks.core.types import AccountSnapshot
 from goldilocks.data.oanda import _GRANULARITY_SECONDS, _parse_oanda_time
+
+logger = logging.getLogger(__name__)
 
 _HOSTS = {
     TradingMode.PAPER: "https://api-fxpractice.oanda.com",
@@ -53,6 +56,7 @@ class OandaConnector(BrokerConnector):
         account_id: str | None = None,
         client: httpx.AsyncClient | None = None,
         poll_interval: float = 5.0,
+        retry_backoff: float = 1.0,
     ) -> None:
         super().__init__(mode)
         self.host = _HOSTS[mode]
@@ -68,6 +72,7 @@ class OandaConnector(BrokerConnector):
             timeout=30, headers={"Authorization": f"Bearer {self._token}"}
         )
         self._poll_interval = poll_interval
+        self._retry_backoff = retry_backoff
         self._fill_queue: asyncio.Queue[Fill] = asyncio.Queue()
 
     async def close(self) -> None:
@@ -177,38 +182,66 @@ class OandaConnector(BrokerConnector):
 
         Polling (default every 5s) is deliberate for v1: completed candles are the
         engine's unit of work, and the candles endpoint is authoritative for them.
+
+        Resilience (W4): transient failures — transport errors, 429, 5xx — are retried
+        here with exponential backoff and never reach the engine; auth/config errors
+        (other 4xx) stay fatal. The poll size scales with time since the last seen bar,
+        so candles that completed during an outage are backfilled, oldest first.
         """
         if timeframe not in _GRANULARITY_SECONDS:
             raise ValueError(f"unknown OANDA granularity: {timeframe!r}")
+        seconds = _GRANULARITY_SECONDS[timeframe]
         last_seen: dict[str, datetime] = {}
+        backoff = self._retry_backoff
         while True:
-            for instrument in instruments:
-                resp = await self._client.get(
-                    f"{self.host}/v3/instruments/{instrument}/candles",
-                    params={"granularity": timeframe, "price": "M", "count": 3},
-                )
-                resp.raise_for_status()
-                complete = [c for c in resp.json()["candles"] if c["complete"]]
-                if instrument not in last_seen:
-                    # First poll primes the cursor without yielding: history up to now
-                    # is the engine's warmup feed, and a bar must never arrive twice.
-                    if complete:
-                        last_seen[instrument] = _parse_oanda_time(complete[-1]["time"])
-                    continue
-                for c in complete:
-                    ts = _parse_oanda_time(c["time"])
-                    if ts <= last_seen[instrument]:
-                        continue
-                    last_seen[instrument] = ts
-                    mid = c["mid"]
-                    yield Bar(
-                        instrument=instrument,
-                        timestamp=ts,
-                        open=Decimal(mid["o"]),
-                        high=Decimal(mid["h"]),
-                        low=Decimal(mid["l"]),
-                        close=Decimal(mid["c"]),
-                        volume=Decimal(c["volume"]),
-                        timeframe=timeframe,
+            try:
+                for instrument in instruments:
+                    count = 3
+                    if instrument in last_seen:
+                        elapsed = datetime.now(tz=UTC) - last_seen[instrument]
+                        count = min(500, max(3, int(elapsed.total_seconds() / seconds) + 2))
+                    resp = await self._client.get(
+                        f"{self.host}/v3/instruments/{instrument}/candles",
+                        params={"granularity": timeframe, "price": "M", "count": count},
                     )
+                    resp.raise_for_status()
+                    complete = [c for c in resp.json()["candles"] if c["complete"]]
+                    if instrument not in last_seen:
+                        # First poll primes the cursor without yielding: history up to
+                        # now is the engine's warmup feed, and a bar must never arrive
+                        # twice.
+                        if complete:
+                            last_seen[instrument] = _parse_oanda_time(complete[-1]["time"])
+                        continue
+                    for c in complete:
+                        ts = _parse_oanda_time(c["time"])
+                        if ts <= last_seen[instrument]:
+                            continue
+                        last_seen[instrument] = ts
+                        mid = c["mid"]
+                        yield Bar(
+                            instrument=instrument,
+                            timestamp=ts,
+                            open=Decimal(mid["o"]),
+                            high=Decimal(mid["h"]),
+                            low=Decimal(mid["l"]),
+                            close=Decimal(mid["c"]),
+                            volume=Decimal(c["volume"]),
+                            timeframe=timeframe,
+                        )
+                backoff = self._retry_backoff  # healthy poll resets the backoff
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status != 429 and status < 500:
+                    raise  # 401/403/404: credentials or config — fatal, stop the engine
+                logger.warning("bar poll got HTTP %s — retrying in %.0fs", status, backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60)
+                continue
+            except httpx.TransportError as exc:
+                logger.warning("bar poll transport error (%s: %s) — retrying in %.0fs",
+                               type(exc).__name__, exc, backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60)
+                continue
             await asyncio.sleep(self._poll_interval)
