@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+from goldilocks.alerts import AlertHub, DesktopSink, LogSink
 from goldilocks.config import DeploymentConfig, Settings
 from goldilocks.connectors.base import BrokerConnector
 from goldilocks.core import Fill, Order, OrderSide, Signal, TradingMode
@@ -72,12 +73,16 @@ class Engine:
         store: StateStore | None = None,
         connector_factory=default_connector_factory,
         warmup_feed: DataFeed | None = None,
+        alert_hub: AlertHub | None = None,
     ) -> None:
         self.settings = settings
         self.live_flag = live
         self.store = store or StateStore(settings.db_path)
         self._connector_factory = connector_factory
         self._warmup_feed = warmup_feed
+        self.alerts = alert_hub or AlertHub(
+            [LogSink()] + ([DesktopSink()] if settings.desktop_alerts else [])
+        )
         self._stop = asyncio.Event()
         self._deployments = [
             d for d in (self._build(c) for c in deployments) if d is not None
@@ -142,6 +147,7 @@ class Engine:
         now = datetime.now(tz=UTC)
         for dep in self._deployments:
             await dep.connector.connect()
+            self._restore_state(dep)
             await self._reconcile(dep)
             self.store.record_deployment(
                 dep.name, dep.config.asset_class.value, dep.mode.value,
@@ -173,42 +179,75 @@ class Engine:
             await coro
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             logger.exception("%s: loop crashed — stopping engine", dep.name)
+            self.alerts.emit(
+                "critical", dep.name,
+                f"engine loop crashed ({type(exc).__name__}: {exc}) — ENGINE STOPPED",
+            )
             self._stop.set()
 
-    # --- startup: reconcile + warmup ----------------------------------------------
+    # --- startup: restore + reconcile + warmup --------------------------------------
+
+    def _restore_state(self, dep: _Deployment) -> None:
+        """W5: rebuild the portfolio by replaying stored fills, and re-arm today's
+        drawdown state — a restart must never erase losses or un-latch a halt."""
+        fills = self.store.fills_for(dep.name)
+        for fill in fills:
+            dep.portfolio.apply_fill(fill)
+            dep.last_prices.setdefault(fill.instrument, fill.price)
+        dep.trades_synced = len(dep.portfolio.closed_trades)
+        if fills:
+            logger.info("%s: replayed %d stored fills (realized P&L %s)",
+                        dep.name, len(fills), dep.portfolio.realized_pnl)
+        today = datetime.now(tz=UTC).date()
+        day_start = self.store.first_equity_on(dep.name, today)
+        halted = self.store.halted_on(dep.name, today)
+        if day_start is not None or halted:
+            dep.risk.restore_day_state(today, day_start, halted)
+            if halted:
+                logger.warning("%s: drawdown halt from earlier today is STILL ACTIVE "
+                               "— restart does not reset it", dep.name)
 
     async def _reconcile(self, dep: _Deployment) -> None:
+        """Adopt the broker as truth for open positions: any difference from the
+        replayed portfolio is corrected with a synthetic fill for the delta (at the
+        position's average entry, so no phantom P&L is realized)."""
         broker = {
             p.instrument: p
             for p in await dep.connector.get_positions()
             if p.instrument in dep.config.instruments
         }
-        stored = {p.instrument: p for p in self.store.positions_for(dep.name)}
-        for instrument in stored.keys() | broker.keys():
-            s, b = stored.get(instrument), broker.get(instrument)
-            if (s is None) != (b is None) or (s and b and s.quantity != b.quantity):
-                logger.warning(
-                    "%s: position mismatch on %s — store=%s broker=%s; adopting broker",
-                    dep.name, instrument,
-                    s.quantity if s else 0, b.quantity if b else 0,
-                )
         now = datetime.now(tz=UTC)
-        for p in broker.values():
-            # Seed via a synthetic fill at the broker's average entry so
-            # cash + position marks back to exactly the allocation.
-            dep.portfolio.apply_fill(
-                Fill(
-                    order_id="reconcile",
-                    instrument=p.instrument,
-                    side=OrderSide.BUY if p.quantity > 0 else OrderSide.SELL,
-                    quantity=abs(p.quantity),
-                    price=p.avg_entry_price,
-                    filled_at=now,
-                )
+        for instrument in {p.instrument for p in dep.portfolio.positions} | broker.keys():
+            held_pos = dep.portfolio.position(instrument)
+            held = held_pos.quantity if held_pos else Decimal(0)
+            target = broker[instrument].quantity if instrument in broker else Decimal(0)
+            delta = target - held
+            if delta == 0:
+                continue
+            price = (
+                broker[instrument].avg_entry_price
+                if instrument in broker
+                else held_pos.avg_entry_price  # closing at entry: zero phantom P&L
             )
-            dep.last_prices[p.instrument] = p.avg_entry_price
+            logger.warning(
+                "%s: position mismatch on %s — engine=%s broker=%s; adopting broker "
+                "(delta fill %s @ %s)",
+                dep.name, instrument, held, target, delta, price,
+            )
+            fill = Fill(
+                order_id=f"reconcile-{uuid.uuid4().hex[:8]}",
+                instrument=instrument,
+                side=OrderSide.BUY if delta > 0 else OrderSide.SELL,
+                quantity=abs(delta),
+                price=price,
+                filled_at=now,
+            )
+            dep.portfolio.apply_fill(fill)
+            self.store.record_fill(fill, dep.name)  # part of history: replay-safe
+            dep.last_prices[instrument] = price
+        dep.trades_synced = len(dep.portfolio.closed_trades)
         self.store.replace_positions(dep.name, dep.portfolio.positions, now)
 
     def _warmup(self, dep: _Deployment) -> None:
@@ -244,7 +283,14 @@ class Engine:
         for signal in dep.strategy.on_bar(bar):
             await self._handle_signal(dep, signal)
         equity = dep.portfolio.equity(dep.last_prices)
+        was_halted = dep.risk.halted
         dep.risk.record_equity(bar.timestamp, equity)
+        if dep.risk.halted and not was_halted:
+            reason = (f"daily drawdown halt: equity {equity} breached "
+                      f"{dep.risk.limits.daily_drawdown_halt_pct}% day loss limit")
+            logger.critical("%s: %s", dep.name, reason)
+            self.store.record_halt(dep.name, bar.timestamp, reason)
+            self.alerts.emit("critical", dep.name, reason, bar.timestamp)
         self.store.record_equity(dep.name, bar.timestamp, equity)
 
     async def _handle_signal(self, dep: _Deployment, signal: Signal) -> None:
@@ -269,6 +315,7 @@ class Engine:
         if not verdict.approved:
             logger.warning("%s: order rejected — %s", dep.name, verdict.reason)
             self.store.record_order(order, "rejected", verdict.reason)
+            self.alerts.emit("warning", dep.name, f"order rejected: {verdict.reason}")
             return
         if dep.mode is TradingMode.SHADOW:
             logger.info("%s [SHADOW]: would submit %s %s %s (%s)",
@@ -282,6 +329,7 @@ class Engine:
         except Exception as exc:
             logger.error("%s: submit failed — %s", dep.name, exc)
             self.store.update_order_status(order.order_id, "error", str(exc))
+            self.alerts.emit("warning", dep.name, f"order submit failed: {exc}")
             return
         self.store.update_order_status(order.order_id, "accepted", broker_id)
 

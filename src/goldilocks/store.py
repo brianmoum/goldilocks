@@ -12,11 +12,11 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from goldilocks.core import Fill, Order, Position
+from goldilocks.core import Fill, Order, OrderSide, Position
 from goldilocks.core.portfolio import Trade
 
 _SCHEMA = """
@@ -75,6 +75,12 @@ CREATE TABLE IF NOT EXISTS equity (
     taken_at      TEXT NOT NULL,
     equity        TEXT NOT NULL,
     PRIMARY KEY (strategy_name, taken_at)
+);
+CREATE TABLE IF NOT EXISTS halts (
+    strategy_name TEXT NOT NULL,
+    day           TEXT NOT NULL,
+    triggered_at  TEXT NOT NULL,
+    reason        TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -199,6 +205,53 @@ class StateStore:
         )
         self._conn.commit()
 
+    def record_halt(self, strategy_name: str, at: datetime, reason: str = "") -> None:
+        self._conn.execute(
+            "INSERT INTO halts VALUES (?,?,?,?)",
+            (strategy_name, at.date().isoformat(), at.isoformat(), reason),
+        )
+        self._conn.commit()
+
+    # --- reads (engine restart recovery, W5) ---
+
+    def fills_for(self, strategy_name: str) -> list[Fill]:
+        """All fills for a strategy in insertion order — replayed on startup to
+        rebuild the portfolio exactly as it was."""
+        rows = self._conn.execute(
+            "SELECT * FROM fills WHERE strategy_name=? ORDER BY rowid",
+            (strategy_name,),
+        ).fetchall()
+        return [
+            Fill(
+                order_id=r["order_id"],
+                instrument=r["instrument"],
+                side=OrderSide(r["side"]),
+                quantity=Decimal(r["quantity"]),
+                price=Decimal(r["price"]),
+                filled_at=datetime.fromisoformat(r["filled_at"]),
+                commission=Decimal(r["commission"]),
+            )
+            for r in rows
+        ]
+
+    def halted_on(self, strategy_name: str, day: date) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM halts WHERE strategy_name=? AND day=? LIMIT 1",
+            (strategy_name, day.isoformat()),
+        ).fetchone()
+        return row is not None
+
+    def first_equity_on(self, strategy_name: str, day: date) -> Decimal | None:
+        """The strategy's first equity snapshot of the given UTC day — the drawdown
+        halt's day-start baseline."""
+        prefix = day.isoformat()
+        row = self._conn.execute(
+            "SELECT equity FROM equity WHERE strategy_name=? AND taken_at LIKE ? "
+            "ORDER BY taken_at ASC LIMIT 1",
+            (strategy_name, f"{prefix}%"),
+        ).fetchone()
+        return Decimal(row["equity"]) if row else None
+
     # --- reads (monitor) ---
 
     def positions_for(self, strategy_name: str) -> list[Position]:
@@ -211,6 +264,37 @@ class StateStore:
                 quantity=Decimal(r["quantity"]),
                 avg_entry_price=Decimal(r["avg_entry_price"]),
             )
+            for r in rows
+        ]
+
+    def equity_curve_for(
+        self, strategy_name: str, limit: int = 500
+    ) -> list[tuple[datetime, Decimal]]:
+        """The most recent `limit` equity snapshots, oldest first."""
+        rows = self._conn.execute(
+            "SELECT taken_at, equity FROM equity WHERE strategy_name=? "
+            "ORDER BY taken_at DESC LIMIT ?",
+            (strategy_name, limit),
+        ).fetchall()
+        return [
+            (datetime.fromisoformat(r["taken_at"]), Decimal(r["equity"]))
+            for r in reversed(rows)
+        ]
+
+    def recent_fills(self, limit: int = 50) -> list[dict]:
+        """Most recent fills across all strategies, newest first, monitor-shaped."""
+        rows = self._conn.execute(
+            "SELECT * FROM fills ORDER BY rowid DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [
+            {
+                "strategy": r["strategy_name"],
+                "instrument": r["instrument"],
+                "side": r["side"],
+                "quantity": r["quantity"],
+                "price": r["price"],
+                "filled_at": r["filled_at"],
+            }
             for r in rows
         ]
 

@@ -14,3 +14,6 @@ state:
 
 data:
   cache_dir: "data/cache"
+
+alerts:
+  desktop: true          # macOS notification center for halts, rejections, crashes

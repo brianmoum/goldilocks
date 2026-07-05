@@ -1,15 +1,28 @@
-"""At-a-glance view of everything deployed. Reads ONLY the SQLite state store — never
-brokers — so CLI, TUI, and web all show the same truth (CLAUDE.md convention).
-
-Per strategy instance: name, asset class, mode (paper/shadow/live), enabled/halted,
-allocated capital, current exposure, open P&L, realized P&L, win/loss record, last signal.
-
-`goldilocks status` prints the table (roadmap phase 2); the textual TUI and FastAPI web
-dashboard (roadmap phase 3) render the same query.
+"""Shared monitor helpers. Every monitor surface (CLI table, TUI, web) reads ONLY the
+SQLite state store — never brokers — so they all show the same truth (CLAUDE.md
+convention). The heavy lifting lives in StateStore.status_rows(); this module holds
+presentation helpers shared across surfaces.
 """
 
 from __future__ import annotations
 
+from decimal import Decimal
 
-def status_table() -> str:
-    raise NotImplementedError("roadmap phase 2")
+_BLOCKS = "▁▂▃▄▅▆▇█"
+
+
+def sparkline(values: list[Decimal], width: int = 24) -> str:
+    """Render an equity series as a unicode sparkline, downsampled to `width`."""
+    if not values:
+        return ""
+    if len(values) > width:
+        step = len(values) / width
+        values = [values[int(i * step)] for i in range(width)]
+    lo, hi = min(values), max(values)
+    if hi == lo:
+        return _BLOCKS[0] * len(values)
+    span = hi - lo
+    return "".join(
+        _BLOCKS[min(len(_BLOCKS) - 1, int((v - lo) / span * len(_BLOCKS)))]
+        for v in values
+    )

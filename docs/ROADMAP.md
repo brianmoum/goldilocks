@@ -48,15 +48,20 @@ Goal: the same strategy runs live against OANDA's practice account.
       deployment across several M15 bar closes; confirm fills, `goldilocks status`,
       stop/restart reconcile, and a KILL_SWITCH drill
 
-## Phase 3 — Monitoring (TUI + web)
+## Phase 3 — Monitoring (TUI + web) ✅ (2026-07-05)
 
 Both read the SQLite state store; neither talks to brokers.
 
-- [ ] TUI dashboard (textual): live-updating version of `goldilocks status` with equity
-      sparklines and recent fills
-- [ ] Web dashboard (FastAPI + htmx or a small SPA): same data, viewable off-machine
-- [ ] Alerting hooks: drawdown halt triggered, connector disconnected, order rejected
-      (start with desktop notification / email; keep the hook pluggable)
+- [x] **W5 first:** drawdown halt + day-start equity + portfolio rebuilt from the
+      store on startup; restart no longer resets risk state *(2026-07-05)*
+- [x] TUI dashboard (textual): live-updating `goldilocks tui` with equity sparklines
+      and recent fills *(2026-07-05)*
+- [x] Web dashboard (FastAPI): `goldilocks web` — JSON API + self-contained page,
+      localhost by default, NO auth (LAN exposure is opt-in via --host) *(2026-07-05)*
+- [x] Alerting hooks: pluggable AlertSink (log always; macOS desktop notifications via
+      settings.yaml `alerts.desktop`); engine emits drawdown halt (critical), order
+      rejected / submit failed (warning), loop crash → engine stopped (critical).
+      Email/webhook = new AlertSink subclass when wanted *(2026-07-05)*
 
 ## Phase 4 — Alpaca + crypto
 
@@ -181,7 +186,11 @@ those are also the moments restarts happen.
 **Remediation:** on startup, rebuild each strategy's day-start equity and halt state
 from the state store (equity table already has the history); persist halt events
 explicitly. **Trigger:** before trusting the drawdown halt at all — i.e. early phase 3,
-alongside the alerting hooks that make halts visible. Status: open.
+alongside the alerting hooks that make halts visible. Status: **resolved 2026-07-05** —
+startup replays stored fills to rebuild the portfolio (cash/realized P&L continuity),
+restores day-start equity + halt latch from the store (`halts` table), and reconcile
+became delta-based (synthetic fill for the difference only, priced to realize zero
+phantom P&L). Restart-survival is covered by tests/test_restart_recovery.py.
 
 ### W6 — Shadow mode does not simulate fills
 

@@ -6,7 +6,8 @@ from goldilocks.cli import main
 def test_help_lists_all_commands(capsys):
     assert main(["help"]) == 0
     out = capsys.readouterr().out
-    for command in ("strategies", "backtest", "run", "stop", "status", "help"):
+    for command in ("strategies", "backtest", "run", "stop", "status", "tui", "web",
+                    "help"):
         assert command in out
     assert "KILL_SWITCH" in out  # the emergency halt must be discoverable
 

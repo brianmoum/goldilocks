@@ -88,6 +88,15 @@ class RiskManager:
     def halted(self) -> bool:
         return self._halted
 
+    def restore_day_state(
+        self, day: date, day_start_equity: Decimal | None, halted: bool
+    ) -> None:
+        """Re-arm today's drawdown state after an engine restart (W5). Without this,
+        stop/start would reset the day baseline and un-latch an active halt."""
+        self._day = day
+        self._day_start_equity = day_start_equity
+        self._halted = halted
+
     # --- the gate -----------------------------------------------------------------
 
     def check_order(self, order: Order, portfolio: Portfolio, price: Decimal) -> RiskVerdict:

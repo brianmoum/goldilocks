@@ -52,6 +52,15 @@ commands:
       P&L, win/loss record, running/stopped. Reads ONLY the SQLite state
       store — never the broker.
 
+  tui
+      The status table, live: auto-refreshing terminal dashboard with equity
+      sparklines and recent fills (quit with q). Needs the [dashboard] extras.
+
+  web [--host 127.0.0.1] [--port 8000]
+      Same data in a browser — JSON API + a self-refreshing page. Binds
+      localhost by default; --host 0.0.0.0 exposes it on your network with NO
+      auth, so only do that on networks you trust. Needs [dashboard] extras.
+
   help
       This overview. `goldilocks <command> --help` shows per-command flags.
 
@@ -81,6 +90,13 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("stop", help="stop the engine")
     sub.add_parser("strategies", help="list registered strategies")
+    sub.add_parser("tui", help="live status dashboard in the terminal")
+
+    p_web = sub.add_parser("web", help="web dashboard (reads the state store)")
+    p_web.add_argument("--host", default="127.0.0.1",
+                       help="bind address (0.0.0.0 exposes on the LAN — no auth!)")
+    p_web.add_argument("--port", type=int, default=8000)
+
     sub.add_parser("help", help="overview of all commands")
 
     args = parser.parse_args(argv)
@@ -126,6 +142,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_status()
     if args.command == "stop":
         return _cmd_stop()
+    if args.command == "tui":
+        return _cmd_tui()
+    if args.command == "web":
+        return _cmd_web(host=args.host, port=args.port)
 
     print(f"goldilocks {args.command}: not implemented yet — see docs/ROADMAP.md", file=sys.stderr)
     return 1
@@ -196,6 +216,36 @@ def _cmd_stop() -> int:
         pid_file.unlink()
         return 1
     print(f"sent SIGTERM to engine (pid {pid})")
+    return 0
+
+
+def _cmd_tui() -> int:
+    from goldilocks.config import load_settings
+
+    try:
+        from goldilocks.monitor.tui import run_tui
+    except ImportError:
+        print('the TUI needs the dashboard extras: pip install -e ".[dashboard]"',
+              file=sys.stderr)
+        return 1
+    run_tui(load_settings().db_path)
+    return 0
+
+
+def _cmd_web(host: str, port: int) -> int:
+    from goldilocks.config import load_settings
+
+    try:
+        import uvicorn
+
+        from goldilocks.monitor.web import create_app
+    except ImportError:
+        print('the web dashboard needs the dashboard extras: '
+              'pip install -e ".[dashboard]"', file=sys.stderr)
+        return 1
+    app = create_app(load_settings().db_path)
+    print(f"goldilocks web dashboard: http://{host}:{port}/")
+    uvicorn.run(app, host=host, port=port, log_level="warning")
     return 0
 
 

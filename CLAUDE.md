@@ -62,21 +62,21 @@ through this code — treat every change accordingly.
 
 ## Current status — pick up here
 
-Last session: 2026-07-05. **Phase 1 complete; phase 2 built, pending real-account
-validation.** The paper trading engine exists end to end: shared `RiskManager`
-(sizing + order gate, W1 resolved), `OandaConnector` (market orders, candle-polling
-bar stream, strict practice/live credential isolation), async `Engine` (warmup feed,
-signal→order→fill loop, SHADOW logging, LIVE triple gate + global capital cap, crash
-recovery reconcile), SQLite state store (WAL; the monitor's only data source), and
-`goldilocks run/stop/status` (PID file + SIGTERM). 53 tests pass; ruff clean. The
-backtest path was refactored onto the same RiskManager and config loader — behavior
-unchanged.
+Last session: 2026-07-05. **Phases 1–3 built.** Phase 2 (paper engine): shared
+`RiskManager` (W1), `OandaConnector` (market orders, candle-polling bar stream with
+retry/backoff + outage backfill (W4), strict practice/live credential isolation),
+async `Engine` (SHADOW logging, LIVE triple gate + global capital cap), SQLite state
+store, `goldilocks run/stop/status`. Phase 3 (monitoring): W5 resolved (restart
+rebuilds portfolio from stored fills and re-arms the day's halt state), pluggable
+alerting (log + macOS desktop; halt/rejection/crash events), `goldilocks tui`
+(textual, sparklines) and `goldilocks web` (FastAPI, localhost, no auth). 74 tests
+pass; ruff clean.
 
-**Next up:** the last phase 2 checkbox — validate against the real OANDA practice
-account: `gl run` with the ema_cross paper deployment over several M15 bar closes;
-check fills arrive, `goldilocks status` reads correctly, stop/restart reconciles, and
-do a KILL_SWITCH drill. Then phase 3 (monitoring TUI/web). W2–W3 remain open in
-docs/ROADMAP.md with their triggers.
+**Next up:** (a) finish the phase 2 real-account validation checkbox (`gl run` over
+several M15 closes: fills, status, stop/restart reconcile, KILL_SWITCH drill — now
+also exercising the dashboards); (b) then phase 4 (Alpaca + crypto) or a persistent
+runtime (launchd/systemd or a small always-on box — W5 being fixed makes
+auto-restart safe now). W2, W3, W6 remain open in docs/ROADMAP.md with triggers.
 
 Environment note: originally scaffolded on Windows (`py` launcher, Python 3.12); now
 also developed on macOS (`python3 -m venv .venv`, Python 3.14). Both work. Setup on a

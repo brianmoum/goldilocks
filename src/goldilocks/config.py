@@ -45,6 +45,7 @@ class Settings:
     kill_switch_file: Path = Path("KILL_SWITCH")
     db_path: Path = Path("state/goldilocks.db")
     cache_dir: Path = Path("data/cache")
+    desktop_alerts: bool = True
 
 
 def load_deployment(path: Path) -> DeploymentConfig:
@@ -81,6 +82,7 @@ def load_settings(path: Path = Path("config/settings.yaml")) -> Settings:
     risk = raw.get("risk") or {}
     state = raw.get("state") or {}
     data = raw.get("data") or {}
+    alerts = raw.get("alerts") or {}
     return Settings(
         default_mode=TradingMode(defaults.get("mode", "paper")),
         max_total_live_capital=Decimal(str(risk.get("max_total_live_capital", "0"))),
@@ -88,4 +90,5 @@ def load_settings(path: Path = Path("config/settings.yaml")) -> Settings:
         kill_switch_file=Path(risk.get("kill_switch_file", "KILL_SWITCH")),
         db_path=Path(state.get("db_path", "state/goldilocks.db")),
         cache_dir=Path(data.get("cache_dir", "data/cache")),
+        desktop_alerts=bool(alerts.get("desktop", True)),
     )
