@@ -16,10 +16,54 @@ from __future__ import annotations
 import argparse
 import sys
 
+_HELP = """\
+goldilocks — algorithmic trading framework
+
+usage: goldilocks <command> [options]      (or `gl <command>` — same CLI, with
+                                            secrets injected from Bitwarden and
+                                            run from the repo root)
+
+commands:
+  strategies
+      List registered strategies: name, asset class, module.
+
+  backtest <config.yaml> [--start YYYY-MM-DD] [--end YYYY-MM-DD]
+      Replay history through one deployment config and print the P&L report
+      (return, max drawdown, win rate, profit factor, trade list). Dates come
+      from the YAML's `backtest:` section unless overridden. Fills are
+      simulated at next bar open with the configured spread; results are
+      best-case ceilings, not estimates (see ROADMAP W2).
+
+  run [--live]
+      Start the engine in the FOREGROUND for every enabled deployment in
+      config/strategies/. Streams bars, routes signals through the shared
+      RiskManager, submits paper/live orders, records everything to the state
+      store. Stop with Ctrl-C or `goldilocks stop` from another terminal.
+      --live is one of THREE required gates for real-money trading: a
+      deployment also needs `mode: live` in its YAML, no KILL_SWITCH file may
+      exist, and its allocation must fit max_total_live_capital in
+      config/settings.yaml. Anything failing a gate runs in shadow instead.
+
+  stop
+      Stop a running engine cleanly (reads state/engine.pid, sends SIGTERM).
+
+  status
+      Show the deployment table: mode, allocation, exposure, equity, realized
+      P&L, win/loss record, running/stopped. Reads ONLY the SQLite state
+      store — never the broker.
+
+  help
+      This overview. `goldilocks <command> --help` shows per-command flags.
+
+emergency halt (not a command):
+  `touch KILL_SWITCH` in the repo root blocks every order from every strategy
+  (backtests excepted) until the file is deleted.
+"""
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="goldilocks", description="Algorithmic trading framework")
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("status", help="show deployed strategies, capital, P&L, win/loss")
 
@@ -37,8 +81,13 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("stop", help="stop the engine")
     sub.add_parser("strategies", help="list registered strategies")
+    sub.add_parser("help", help="overview of all commands")
 
     args = parser.parse_args(argv)
+
+    if args.command is None or args.command == "help":
+        print(_HELP)
+        return 0
 
     if args.command == "strategies":
         from goldilocks.strategies import STRATEGY_REGISTRY
