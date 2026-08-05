@@ -152,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 _PID_FILE = "state/engine.pid"
+_STOP_FILE = "state/STOP"
 
 
 def _cmd_run(live: bool) -> int:
@@ -185,12 +186,32 @@ def _cmd_run(live: bool) -> int:
         return 1
     pid_file.parent.mkdir(parents=True, exist_ok=True)
     pid_file.write_text(str(os.getpid()))
+    stop_file = Path(_STOP_FILE)
+    stop_file.unlink(missing_ok=True)  # a stale STOP must not kill a fresh engine
 
     async def main() -> None:
         loop = asyncio.get_running_loop()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, engine.stop)
-        await engine.run()
+        try:
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                loop.add_signal_handler(sig, engine.stop)
+        except NotImplementedError:
+            # Windows Proactor loop: no add_signal_handler. Ctrl-C still arrives
+            # as SIGINT; `goldilocks stop` uses the STOP file watched below.
+            signal.signal(signal.SIGINT, lambda *_: engine.stop())
+
+        async def watch_stop_file() -> None:
+            while True:
+                if stop_file.exists():
+                    stop_file.unlink(missing_ok=True)
+                    engine.stop()
+                    return
+                await asyncio.sleep(1)
+
+        watcher = asyncio.create_task(watch_stop_file())
+        try:
+            await engine.run()
+        finally:
+            watcher.cancel()
 
     try:
         asyncio.run(main())
@@ -209,6 +230,14 @@ def _cmd_stop() -> int:
         print("engine is not running (no PID file)", file=sys.stderr)
         return 1
     pid = int(pid_file.read_text().strip())
+    if os.name == "nt":
+        # Windows: os.kill(SIGTERM) is TerminateProcess — a hard kill that skips
+        # engine cleanup. Request a clean stop via the STOP file the run loop
+        # watches instead. (Never use os.kill liveness probes here: on Windows
+        # ANY other signal value, including 0, unconditionally terminates.)
+        Path(_STOP_FILE).touch()
+        print(f"stop requested via {_STOP_FILE} — engine (pid {pid}) exits within a few seconds")
+        return 0
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:

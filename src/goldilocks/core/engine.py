@@ -61,7 +61,10 @@ class _Deployment:
 
     @property
     def name(self) -> str:
-        return self.config.strategy
+        # The YAML filename stem, NOT config.strategy: the state store keys
+        # orders/fills/equity/halts by this, and two deployments of the same
+        # strategy (different instruments) must never share a key.
+        return self.config.path.stem
 
 
 class Engine:
@@ -87,6 +90,9 @@ class Engine:
         self._deployments = [
             d for d in (self._build(c) for c in deployments) if d is not None
         ]
+        names = [d.name for d in self._deployments]
+        if len(names) != len(set(names)):
+            raise ValueError(f"duplicate deployment names (yaml filename stems): {names}")
 
     # --- setup -------------------------------------------------------------------
 

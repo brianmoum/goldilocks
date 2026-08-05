@@ -7,6 +7,8 @@ import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
+
 from goldilocks.config import DeploymentConfig, Settings
 from goldilocks.connectors.base import BrokerConnector
 from goldilocks.core import (
@@ -221,6 +223,37 @@ def test_disabled_deployment_skipped(tmp_path):
         connector_factory=lambda cfg, m: FakeConnector(m),
     )
     assert engine._deployments == []
+
+
+def _named_config(tmp_path, stem: str, instrument: str) -> DeploymentConfig:
+    return DeploymentConfig(
+        path=tmp_path / f"{stem}.yaml", strategy="engine_test",
+        asset_class=AssetClass.FOREX, mode=TradingMode.PAPER, enabled=True,
+        allocation=Decimal(1000), max_position_pct=Decimal(50),
+        instruments=[instrument],
+    )
+
+
+def test_two_deployments_of_one_strategy_stay_separate(tmp_path):
+    """Deployments are keyed by YAML stem, not strategy name: running the same
+    strategy on two instruments must not merge their orders/fills/equity."""
+    engine = Engine(
+        Settings(db_path=tmp_path / "state" / "test.db", kill_switch_file=tmp_path / "K"),
+        [_named_config(tmp_path, "ema_eurusd", "EUR_USD"),
+         _named_config(tmp_path, "ema_gbpusd", "GBP_USD")],
+        connector_factory=lambda cfg, m: FakeConnector(m),
+    )
+    assert [d.name for d in engine._deployments] == ["ema_eurusd", "ema_gbpusd"]
+
+
+def test_duplicate_deployment_names_rejected(tmp_path):
+    with pytest.raises(ValueError, match="duplicate deployment names"):
+        Engine(
+            Settings(db_path=tmp_path / "state" / "test.db", kill_switch_file=tmp_path / "K"),
+            [_named_config(tmp_path, "same", "EUR_USD"),
+             _named_config(tmp_path, "same", "GBP_USD")],
+            connector_factory=lambda cfg, m: FakeConnector(m),
+        )
 
 
 def test_reconcile_adopts_broker_position(tmp_path):

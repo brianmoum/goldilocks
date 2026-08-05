@@ -62,26 +62,36 @@ through this code — treat every change accordingly.
 
 ## Current status — pick up here
 
-Last session: 2026-07-05. **Phases 1–3 built.** Phase 2 (paper engine): shared
-`RiskManager` (W1), `OandaConnector` (market orders, candle-polling bar stream with
-retry/backoff + outage backfill (W4), strict practice/live credential isolation),
-async `Engine` (SHADOW logging, LIVE triple gate + global capital cap), SQLite state
-store, `goldilocks run/stop/status`. Phase 3 (monitoring): W5 resolved (restart
-rebuilds portfolio from stored fills and re-arms the day's halt state), pluggable
-alerting (log + macOS desktop; halt/rejection/crash events), `goldilocks tui`
-(textual, sparklines) and `goldilocks web` (FastAPI, localhost, no auth). 74 tests
-pass; ruff clean.
+Last session: 2026-08-04 (Windows). **Phases 1–3 complete — phase 2 is now validated
+against the real OANDA practice account**, closing the last open checkbox there.
+Phase 2 (paper engine): shared `RiskManager` (W1), `OandaConnector` (market orders,
+candle-polling bar stream with retry/backoff + outage backfill (W4), strict
+practice/live credential isolation), async `Engine` (SHADOW logging, LIVE triple gate
++ global capital cap), SQLite state store, `goldilocks run/stop/status`. Phase 3
+(monitoring): W5 resolved, pluggable alerting (log + macOS desktop), `goldilocks tui`
+and `goldilocks web`. 76 tests pass; ruff clean.
 
-**Next up:** (a) finish the phase 2 real-account validation checkbox (`gl run` over
-several M15 closes: fills, status, stop/restart reconcile, KILL_SWITCH drill — now
-also exercising the dashboards); (b) then phase 4 (Alpaca + crypto) or a persistent
-runtime (launchd/systemd or a small always-on box — W5 being fixed makes
-auto-restart safe now). W2, W3, W6 remain open in docs/ROADMAP.md with triggers.
+**The 2026-08-04 validation run** (~5h, practice account) confirmed real fills, risk-capped
+sizing, the dashboards, restart replay, and a KILL_SWITCH drill — details in the phase 2
+bullet in docs/ROADMAP.md. It found three bugs. Two are fixed: deployments are now keyed by
+YAML filename stem (two deployments of one strategy were merging into one state-store key),
+and `goldilocks run/stop` works on Windows (asyncio has no `add_signal_handler` there, and
+`os.kill(SIGTERM)` is a hard kill — stop now goes through a `state/STOP` file). The third is
+open as **W7 and is the most important thing to fix next**: a *spurious* OANDA 401 (token
+verified fine before and after) killed the engine while it held an open position, because
+the connector rules all 4xx fatal.
+
+**Next up:** (a) **W7** — required before any unattended multi-day paper run; (b) then
+phase 4 (Alpaca + crypto) or a persistent runtime (Windows scheduled task / launchd /
+small always-on box). W2, W3, W6 also remain open in docs/ROADMAP.md with triggers.
 
 Environment note: originally scaffolded on Windows (`py` launcher, Python 3.12); now
 also developed on macOS (`python3 -m venv .venv`, Python 3.14). Both work. Setup on a
-fresh machine: create a venv, `pip install -e ".[dev]"`, then `pytest` and
-`goldilocks strategies` to verify.
+fresh machine: create a venv, `pip install -e ".[dev,dashboard,alpaca,forex]"` (plain
+`[dev]` omits fastapi/textual and `pytest` will fail collecting the monitor tests),
+then `pytest` and `goldilocks strategies` to verify. On Windows there is no Bitwarden
+`gl` function — put the practice credentials in a gitignored `.env` (python-dotenv
+loads it) and run `.venv\Scripts\goldilocks.exe` directly.
 
 Build order lives in `docs/ROADMAP.md` — consult it before starting work, and update it
 (status + decision log) and this section when finishing a phase or making a design

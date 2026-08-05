@@ -44,9 +44,16 @@ Goal: the same strategy runs live against OANDA's practice account.
 - [x] Crash recovery: on restart, reconcile state store against broker positions —
       mismatches logged, broker adopted as truth, portfolio seeded at broker avg entry
       *(2026-07-05; v1 assumes one strategy per instrument per account)*
-- [ ] Validate against the real practice account: `gl run` with the ema_cross paper
-      deployment across several M15 bar closes; confirm fills, `goldilocks status`,
-      stop/restart reconcile, and a KILL_SWITCH drill
+- [x] Validate against the real practice account *(2026-08-04, on Windows)*: engine ran
+      ~5h against the OANDA practice account. Verified end to end — real FOK
+      fills (buy 371 GBP_USD @ 1.34512 → sell @ 1.34500, trade row realized -0.04452,
+      matched against the broker), position sizing capped by the shared RiskManager
+      (499.04 of a 1000 allocation, under `max_position_pct: 50`), `goldilocks status` /
+      web dashboard / TUI data layer all reading the store, stop → restart replaying
+      stored fills with no phantom P&L, and a KILL_SWITCH drill (17 consecutive orders
+      rejected with the reason recorded + warning alerts; broker untouched; first cross
+      after removing the file filled normally). Three bugs found — two fixed (see the
+      decision log), one open as **W7**
 
 ## Phase 3 — Monitoring (TUI + web) ✅ (2026-07-05)
 
@@ -205,6 +212,31 @@ shadow to be faithful.
 price (same simulator as backtest fills), suppressing only the broker submission.
 **Trigger:** before shadow output is used for anything (phase 6 gate). Status: open.
 
+### W7 — A spurious 401 kills the engine, and it dies holding a position
+
+**What:** during the 2026-08-04 practice validation, OANDA returned HTTP 401 on a routine
+candles poll after ~2.5 hours of continuous successful polling with the same token. The
+connector treats every non-429 4xx as fatal (`connectors/oanda.py`, `stream_bars`:
+`if status != 429 and status < 500: raise`), so the engine stopped completely — three
+minutes after the strategy had entered a 371-unit GBP_USD long. The token was verified
+working immediately afterwards and again later, so the 401 was **transient OANDA
+behaviour, not a credential problem**. The critical alert did fire correctly.
+**Why it matters:** this is now the single largest uptime risk, and it fails in the worst
+possible state — flat would be survivable, but the engine abandons an *open position* with
+no exit logic running. W4 fixed transport/429/5xx and explicitly ruled 4xx fatal on the
+premise that a 401 means bad credentials; this run disproves that premise. On an unattended
+box the position sits unmanaged until a human notices the alert.
+**Remediation:** distinguish a 401 *before any successful authenticated call* (genuine
+bad credentials → stay fatal, fail fast at startup) from a 401 *after* the connector has
+already authenticated successfully (→ treat as transient: retry with the existing
+exponential backoff, escalate to a critical alert immediately, and only stop the engine
+after N consecutive failures, so a real mid-run token revocation still halts trading).
+Separately decide the policy for "engine stopping while holding a position" — likely NOT
+auto-flatten (a network fault may make it impossible, and force-closing on a blip is its
+own risk), but the alert must name the open position explicitly.
+**Trigger:** before ANY unattended multi-day paper run, and required before live.
+Status: open (found 2026-08-04).
+
 ## Decision log
 
 | Date | Decision | Why |
@@ -221,3 +253,6 @@ price (same simulator as backtest fills), suppressing only the broker submission
 | 2026-07-03 | Data cache is CSV keyed by (instrument, timeframe, start, end) | Zero extra deps; swap for parquet if size becomes a problem |
 | 2026-07-04 | Secrets injected per-run from Bitwarden via the `gl` shell function | No plaintext token on disk; `.env` stays supported (python-dotenv never overrides preset env vars) |
 | 2026-07-04 | Weaknesses tracked in this file (W1–W3) with explicit triggers, not an external tracker | Every session reads this file; tickets outside the repo drift and miss the moment of decision |
+| 2026-08-04 | A deployment's identity is its YAML filename stem, not `config.strategy` | Two deployments of one strategy (different instruments) collided on a single state-store key, merging their orders/fills/equity. Engine now also rejects duplicate stems at startup |
+| 2026-08-04 | `goldilocks stop` uses a `state/STOP` file on Windows instead of a signal | Windows has no real SIGTERM: `os.kill(pid, SIGTERM)` is `TerminateProcess`, a hard kill that skips engine cleanup. Also note `os.kill(pid, 0)` is NOT a safe liveness probe there — any signal value terminates. POSIX keeps using SIGTERM |
+| 2026-08-04 | Validation deployments get their own throwaway YAML (fast EMAs, second instrument), deleted afterwards | Exercising fills on demand without touching the canonical deployment's parameters or its state-store history |
