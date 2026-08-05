@@ -171,7 +171,10 @@ def test_stream_bars_survives_transient_errors():
     assert calls == 4  # prime, transport error, 503, success
 
 
-def test_stream_bars_auth_error_is_fatal():
+def test_stream_bars_auth_error_before_any_success_is_fatal():
+    """W7: a 401 with no successful call behind it means the credentials really are
+    wrong — fail fast instead of retrying a token that will never work."""
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"errorMessage": "bad token"})
 
@@ -181,6 +184,83 @@ def test_stream_bars_auth_error_is_fatal():
 
     with pytest.raises(httpx.HTTPStatusError):
         asyncio.run(run())
+
+
+def test_stream_bars_spurious_401_after_success_is_retried():
+    """W7: OANDA returns 401s on tokens that are still valid (observed 2026-08-04
+    after 2.5h of healthy polling). Once a poll has succeeded, a 401 is a blip —
+    the engine must not die, least of all while holding a position."""
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:  # priming poll succeeds -> credentials proven good
+            return httpx.Response(200, json={"candles": [make_candle(T0)]})
+        if calls == 2:
+            return httpx.Response(401, json={"errorMessage": "spurious"})
+        return httpx.Response(200, json={"candles": [
+            make_candle(T0), make_candle(T0 + timedelta(minutes=15))
+        ]})
+
+    async def run():
+        stream = make_connector(handler).stream_bars(["EUR_USD"], "M15")
+        return await asyncio.wait_for(anext(stream), timeout=2)
+
+    bar = asyncio.run(run())
+    assert bar.timestamp == T0 + timedelta(minutes=15)
+    assert calls == 3  # prime, spurious 401, recovery
+
+
+def test_stream_bars_persistent_401_after_success_is_fatal():
+    """A genuine mid-run revocation must still halt trading rather than retry forever."""
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(200, json={"candles": [make_candle(T0)]})
+        return httpx.Response(401, json={"errorMessage": "revoked"})
+
+    async def run():
+        conn = make_connector(handler, max_auth_retries=3)
+        stream = conn.stream_bars(["EUR_USD"], "M15")
+        await asyncio.wait_for(anext(stream), timeout=2)
+
+    with pytest.raises(OandaError, match="consecutive"):
+        asyncio.run(run())
+    assert calls == 5  # prime + 3 tolerated retries + the one that exceeds the budget
+
+
+def test_stream_bars_401_streak_resets_after_a_healthy_poll():
+    """Intermittent 401s separated by good polls must never accumulate into a false
+    'revoked' verdict — only a CONSECUTIVE run counts."""
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(200, json={"candles": [make_candle(T0)]})
+        if calls in (2, 4):
+            return httpx.Response(401, json={"errorMessage": "spurious"})
+        extra = 1 if calls == 3 else 2
+        return httpx.Response(200, json={"candles": [
+            make_candle(T0 + timedelta(minutes=15 * i)) for i in range(extra + 1)
+        ]})
+
+    async def run():
+        # budget of 1: without the reset, the second 401 would be fatal
+        conn = make_connector(handler, max_auth_retries=1)
+        stream = conn.stream_bars(["EUR_USD"], "M15")
+        first = await asyncio.wait_for(anext(stream), timeout=2)
+        second = await asyncio.wait_for(anext(stream), timeout=2)
+        return first, second
+
+    first, second = asyncio.run(run())
+    assert first.timestamp == T0 + timedelta(minutes=15)
+    assert second.timestamp == T0 + timedelta(minutes=30)
 
 
 def test_stream_bars_backfills_gap_after_outage():

@@ -187,9 +187,16 @@ class Engine:
             raise
         except Exception as exc:
             logger.exception("%s: loop crashed — stopping engine", dep.name)
+            # W7: the engine can die holding risk, and nothing will manage that position
+            # until a human intervenes. "engine stopped" and "engine stopped while long
+            # 371 GBP_USD" deserve very different urgency from whoever reads the alert,
+            # so the exposure goes in the message itself.
+            held = ", ".join(f"{p.quantity} {p.instrument}" for p in dep.portfolio.positions)
+            exposure = f" — POSITION STILL OPEN: {held}" if held else " (flat)"
             self.alerts.emit(
                 "critical", dep.name,
-                f"engine loop crashed ({type(exc).__name__}: {exc}) — ENGINE STOPPED",
+                f"engine loop crashed ({type(exc).__name__}: {exc}) — ENGINE STOPPED"
+                f"{exposure}",
             )
             self._stop.set()
 

@@ -57,6 +57,7 @@ class OandaConnector(BrokerConnector):
         client: httpx.AsyncClient | None = None,
         poll_interval: float = 5.0,
         retry_backoff: float = 1.0,
+        max_auth_retries: int = 5,
     ) -> None:
         super().__init__(mode)
         self.host = _HOSTS[mode]
@@ -73,6 +74,10 @@ class OandaConnector(BrokerConnector):
         )
         self._poll_interval = poll_interval
         self._retry_backoff = retry_backoff
+        self._max_auth_retries = max_auth_retries
+        # W7: set once any authenticated request has succeeded. Until then a 401 is
+        # a real credential problem; afterwards it is presumed transient (see stream_bars).
+        self._auth_verified = False
         self._fill_queue: asyncio.Queue[Fill] = asyncio.Queue()
 
     async def close(self) -> None:
@@ -92,6 +97,7 @@ class OandaConnector(BrokerConnector):
                 f"{resp.status_code}) — token/account pair may be mixed or expired"
             )
         resp.raise_for_status()
+        self._auth_verified = True
 
     async def get_account(self) -> AccountSnapshot:
         resp = await self._client.get(self._url("/summary"))
@@ -184,15 +190,24 @@ class OandaConnector(BrokerConnector):
         engine's unit of work, and the candles endpoint is authoritative for them.
 
         Resilience (W4): transient failures — transport errors, 429, 5xx — are retried
-        here with exponential backoff and never reach the engine; auth/config errors
-        (other 4xx) stay fatal. The poll size scales with time since the last seen bar,
+        here with exponential backoff and never reach the engine; config errors (404 and
+        friends) stay fatal. The poll size scales with time since the last seen bar,
         so candles that completed during an outage are backfilled, oldest first.
+
+        Auth failures are the subtle case (W7). OANDA emits spurious 401s on a token
+        that is still valid — one was observed on 2026-08-04 after 2.5h of healthy
+        polling, and it stopped the engine while it held an open position. So a 401/403
+        is fatal only before any authenticated request has succeeded (genuinely bad
+        credentials, caught at startup by connect()); afterwards it is retried like any
+        other blip, but only for `max_auth_retries` CONSECUTIVE failures, so a real
+        mid-run revocation still halts trading rather than looping forever.
         """
         if timeframe not in _GRANULARITY_SECONDS:
             raise ValueError(f"unknown OANDA granularity: {timeframe!r}")
         seconds = _GRANULARITY_SECONDS[timeframe]
         last_seen: dict[str, datetime] = {}
         backoff = self._retry_backoff
+        auth_failures = 0
         while True:
             try:
                 for instrument in instruments:
@@ -229,11 +244,33 @@ class OandaConnector(BrokerConnector):
                             volume=Decimal(c["volume"]),
                             timeframe=timeframe,
                         )
-                backoff = self._retry_backoff  # healthy poll resets the backoff
+                # A healthy poll proves the token works: reset the backoff, clear the
+                # auth-failure streak, and (re)confirm credentials for the W7 rule.
+                backoff = self._retry_backoff
+                auth_failures = 0
+                self._auth_verified = True
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
+                if status in (401, 403):
+                    if not self._auth_verified:
+                        raise  # never authenticated: the credentials really are wrong
+                    auth_failures += 1
+                    if auth_failures > self._max_auth_retries:
+                        raise OandaError(
+                            f"OANDA returned HTTP {status} on {auth_failures} consecutive "
+                            f"bar polls after previously accepting these credentials — "
+                            f"treating as revoked, stopping the engine"
+                        ) from exc
+                    logger.error(
+                        "bar poll got HTTP %s on a previously valid token "
+                        "(%d/%d consecutive) — retrying in %.0fs",
+                        status, auth_failures, self._max_auth_retries, backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 60)
+                    continue
                 if status != 429 and status < 500:
-                    raise  # 401/403/404: credentials or config — fatal, stop the engine
+                    raise  # 404 and friends: config error — fatal, stop the engine
                 logger.warning("bar poll got HTTP %s — retrying in %.0fs", status, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)

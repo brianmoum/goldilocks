@@ -56,6 +56,7 @@ class FakeConnector(BrokerConnector):
         self.submitted = []
         self.broker_positions: list[Position] = []
         self.fill_price = Decimal("1.1000")
+        self.bar_stream_error: Exception | None = None
         self._fill_queue: asyncio.Queue = asyncio.Queue()
 
     async def connect(self):
@@ -80,7 +81,10 @@ class FakeConnector(BrokerConnector):
 
     async def stream_bars(self, instruments, timeframe):
         while True:
-            yield await self.bar_queue.get()
+            bar = await self.bar_queue.get()
+            if self.bar_stream_error is not None:
+                raise self.bar_stream_error
+            yield bar
 
     async def stream_fills(self):
         while True:

@@ -235,7 +235,17 @@ Separately decide the policy for "engine stopping while holding a position" — 
 auto-flatten (a network fault may make it impossible, and force-closing on a blip is its
 own risk), but the alert must name the open position explicitly.
 **Trigger:** before ANY unattended multi-day paper run, and required before live.
-Status: open (found 2026-08-04).
+Status: **resolved 2026-08-04** — `OandaConnector` tracks `_auth_verified` (set by
+`connect()` and by every healthy poll). In `stream_bars` a 401/403 is still fatal when
+nothing has authenticated yet, but after a success it is retried on the existing
+exponential backoff and only becomes fatal after `max_auth_retries` (default 5)
+*consecutive* failures, so a real revocation still halts trading while a blip does not.
+Any healthy poll resets the streak. The engine's crash alert now names the open position
+(`POSITION STILL OPEN: 371 GBP_USD`) instead of just saying it stopped. Auto-flatten was
+deliberately NOT added: a fault that kills the engine may equally prevent a clean exit,
+and force-closing on a blip is its own risk — the operator decides, but the alert now
+tells them there is a decision to make. Covered by tests in test_oanda_connector.py
+(spurious/persistent/streak-reset) and test_alerts.py (crash alert names the position).
 
 ## Decision log
 
@@ -256,3 +266,5 @@ Status: open (found 2026-08-04).
 | 2026-08-04 | A deployment's identity is its YAML filename stem, not `config.strategy` | Two deployments of one strategy (different instruments) collided on a single state-store key, merging their orders/fills/equity. Engine now also rejects duplicate stems at startup |
 | 2026-08-04 | `goldilocks stop` uses a `state/STOP` file on Windows instead of a signal | Windows has no real SIGTERM: `os.kill(pid, SIGTERM)` is `TerminateProcess`, a hard kill that skips engine cleanup. Also note `os.kill(pid, 0)` is NOT a safe liveness probe there — any signal value terminates. POSIX keeps using SIGTERM |
 | 2026-08-04 | Validation deployments get their own throwaway YAML (fast EMAs, second instrument), deleted afterwards | Exercising fills on demand without touching the canonical deployment's parameters or its state-store history |
+| 2026-08-04 | A 401 is fatal only before the connector has ever authenticated; afterwards it is transient until N consecutive failures (W7) | Observed: OANDA returns 401 on a token that is still valid. "401 = bad credentials" is true at startup and false mid-run, so the two cases need different handling — fail fast when the token was never good, ride out blips when it was |
+| 2026-08-04 | The engine does NOT auto-flatten when a loop crashes; the alert names the open position instead | Whatever killed the loop may also prevent a clean exit, and force-closing on a transient fault is its own risk. The human decides — but the alert has to tell them a position is exposed |

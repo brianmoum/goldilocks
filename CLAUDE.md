@@ -73,17 +73,20 @@ and `goldilocks web`. 76 tests pass; ruff clean.
 
 **The 2026-08-04 validation run** (~5h, practice account) confirmed real fills, risk-capped
 sizing, the dashboards, restart replay, and a KILL_SWITCH drill — details in the phase 2
-bullet in docs/ROADMAP.md. It found three bugs. Two are fixed: deployments are now keyed by
-YAML filename stem (two deployments of one strategy were merging into one state-store key),
-and `goldilocks run/stop` works on Windows (asyncio has no `add_signal_handler` there, and
-`os.kill(SIGTERM)` is a hard kill — stop now goes through a `state/STOP` file). The third is
-open as **W7 and is the most important thing to fix next**: a *spurious* OANDA 401 (token
-verified fine before and after) killed the engine while it held an open position, because
-the connector rules all 4xx fatal.
+bullet in docs/ROADMAP.md. It found three bugs, all now fixed: deployments are keyed by YAML
+filename stem (two deployments of one strategy were merging into one state-store key),
+`goldilocks run/stop` works on Windows (asyncio has no `add_signal_handler` there, and
+`os.kill(SIGTERM)` is a hard kill — stop goes through a `state/STOP` file), and **W7** — a
+*spurious* OANDA 401 killed the engine while it held an open position, because the connector
+ruled all 4xx fatal. A 401 is now fatal only before the connector has ever authenticated;
+after that it is retried until `max_auth_retries` consecutive failures, and the crash alert
+names any open position.
 
-**Next up:** (a) **W7** — required before any unattended multi-day paper run; (b) then
-phase 4 (Alpaca + crypto) or a persistent runtime (Windows scheduled task / launchd /
-small always-on box). W2, W3, W6 also remain open in docs/ROADMAP.md with triggers.
+**Next up:** a persistent runtime (Windows scheduled task / launchd / small always-on box)
+so paper trading accumulates a real track record — W5 and W7 together make unattended
+running safe now. Then phase 4 (Alpaca + crypto). W2, W3, W6 remain open in docs/ROADMAP.md
+with triggers; **W3 (walk-forward) jumps the queue the day any parameter tuning or strategy
+development starts** — `ema_cross` is a pipeline prover, not a strategy meant to be tuned.
 
 Environment note: originally scaffolded on Windows (`py` launcher, Python 3.12); now
 also developed on macOS (`python3 -m venv .venv`, Python 3.14). Both work. Setup on a
